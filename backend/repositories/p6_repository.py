@@ -1,9 +1,15 @@
 import sqlite3
+import uuid
+import base64
 from datetime import datetime
 from typing import Optional
 from backend.models.domain import P6Activity, P6Relationship
 
 class P6Repository:
+    def _generate_guid(self) -> str:
+        """Generates a P6-compatible 22-character GUID."""
+        return base64.b64encode(uuid.uuid4().bytes).decode('utf-8').rstrip('=')
+
     def get_next_key(self, conn: sqlite3.Connection, table_name: str) -> int:
         """
         Gets the next available primary key for a table from NEXTKEY.
@@ -80,21 +86,39 @@ class P6Repository:
         
         # Get Next Key
         task_id = self.get_next_key(conn, "TASK")
+        task_guid = self._generate_guid()
         
-        # Insert
+        # Insert with defaults matching P6 schema requirements
         sql = """
             INSERT INTO TASK (
                 TASK_ID, PROJ_ID, WBS_ID, CLNDR_ID, TASK_CODE, TASK_NAME, 
                 STATUS_CODE, TASK_TYPE, DURATION_TYPE, 
                 TARGET_DRTN_HR_CNT, REMAIN_DRTN_HR_CNT, PHYS_COMPLETE_PCT,
-                CREATE_DATE, UPDATE_DATE, CREATE_USER, UPDATE_USER
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                CREATE_DATE, UPDATE_DATE, CREATE_USER, UPDATE_USER,
+                GUID, COMPLETE_PCT_TYPE, PRIORITY_TYPE, EST_WT,
+                REV_FDBK_FLAG, LOCK_PLAN_FLAG, AUTO_COMPUTE_ACT_FLAG,
+                DRIVING_PATH_FLAG, CONTROL_UPDATES_FLAG, SCP_PCT_COMPLETE
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, 
+                ?, ?, ?, 
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, 'CP_Drtn', 'PT_Top', 1.0,
+                'N', 'N', 'N',
+                'N', 'N', 0.0
+            )
         """
+        # Use provided values or defaults if missing in the object (though Pydantic model should handle most)
+        status_code = task.status_code if task.status_code else 'TK_NotStart'
+        task_type = task.task_type if task.task_type else 'TT_Task'
+        duration_type = task.duration_type if task.duration_type else 'DT_FixedDUR2'
+        
         cursor.execute(sql, (
             task_id, task.proj_id, task.wbs_id, task.clndr_id, task.task_code, task.task_name,
-            task.status_code, task.task_type, task.duration_type,
+            status_code, task_type, duration_type,
             task.target_drtn_hr_cnt, task.remain_drtn_hr_cnt, task.phys_complete_pct,
-            task.create_date, task.update_date, task.create_user, task.update_user
+            task.create_date, task.update_date, task.create_user, task.update_user,
+            task_guid
         ))
         return task_id
 
@@ -154,3 +178,122 @@ class P6Repository:
         cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM PROJECT WHERE PROJ_ID = ?", (proj_id,))
         return cursor.fetchone() is not None
+
+    def get_root_eps_wbs_id(self, conn: sqlite3.Connection) -> Optional[tuple[int, int]]:
+        """
+        Finds the WBS_ID and OBS_ID of the root EPS node.
+        Assumes the root EPS is a PROJWBS entry where PROJ_NODE_FLAG='Y' and PARENT_WBS_ID is NULL.
+        """
+        cursor = conn.cursor()
+        # Try to find a WBS that belongs to a project with PROJECT_FLAG='N' (EPS)
+        sql = """
+            SELECT w.WBS_ID, w.OBS_ID
+            FROM PROJWBS w
+            JOIN PROJECT p ON w.PROJ_ID = p.PROJ_ID
+            WHERE p.PROJECT_FLAG = 'N' 
+            ORDER BY w.WBS_ID ASC 
+            LIMIT 1
+        """
+        cursor.execute(sql)
+        row = cursor.fetchone()
+        if row:
+            return (row[0], row[1])
+        return None
+
+    def create_project(self, conn: sqlite3.Connection, short_name: str, long_name: str, planned_start: Optional[datetime] = None) -> int:
+        cursor = conn.cursor()
+        
+        # 1. IDs
+        proj_id = self.get_next_key(conn, "PROJECT")
+        wbs_id = self.get_next_key(conn, "PROJWBS")
+        
+        # Find Parent EPS and OBS
+        eps_info = self.get_root_eps_wbs_id(conn)
+        parent_wbs_id = None
+        obs_id = None
+        
+        if eps_info:
+            parent_wbs_id, obs_id = eps_info
+            
+        # Find Default Calendar
+        cursor.execute("SELECT CLNDR_ID FROM CALENDAR WHERE DEFAULT_FLAG='Y' LIMIT 1")
+        cal_row = cursor.fetchone()
+        clndr_id = cal_row[0] if cal_row else None
+
+        now = datetime.now()
+        start_date = planned_start if planned_start else now
+        
+        # Generate GUIDs
+        proj_guid = self._generate_guid()
+        wbs_guid = self._generate_guid()
+
+        # 2. Insert PROJECT
+        # Added all default flags and settings observed from P6 manual creation
+        # Added GUID and set ORIG_PROJ_ID to NULL (None)
+        sql_proj = """
+            INSERT INTO PROJECT (
+                PROJ_ID, PROJ_SHORT_NAME, ORIG_PROJ_ID, 
+                ADD_DATE, CREATE_DATE, UPDATE_DATE, CREATE_USER, UPDATE_USER,
+                PLAN_START_DATE, PROJECT_FLAG, CLNDR_ID,
+                FY_START_MONTH_NUM, RSRC_SELF_ADD_FLAG, ALLOW_COMPLETE_FLAG, 
+                RSRC_MULTI_ASSIGN_FLAG, CHECKOUT_FLAG, STEP_COMPLETE_FLAG, 
+                COST_QTY_RECALC_FLAG, BATCH_SUM_FLAG, NAME_SEP_CHAR, 
+                DEF_COMPLETE_PCT_TYPE, TASK_CODE_BASE, TASK_CODE_STEP, 
+                PRIORITY_NUM, WBS_MAX_SUM_LEVEL, STRGY_PRIORITY_NUM, 
+                CRITICAL_DRTN_HR_CNT, DEF_COST_PER_QTY, DEF_DURATION_TYPE, 
+                TASK_CODE_PREFIX, DEF_QTY_TYPE, DEF_RATE_TYPE, 
+                ADD_ACT_REMAIN_FLAG, ACT_THIS_PER_LINK_FLAG, DEF_TASK_TYPE, 
+                ACT_PCT_LINK_FLAG, CRITICAL_PATH_TYPE, TASK_CODE_PREFIX_FLAG, 
+                DEF_ROLLUP_DATES_FLAG, USE_PROJECT_BASELINE_FLAG, 
+                REM_TARGET_LINK_FLAG, RESET_PLANNED_FLAG, ALLOW_NEG_ACT_FLAG, 
+                SUM_ASSIGN_LEVEL, FINTMPL_ID, GUID
+            ) VALUES (
+                ?, ?, ?, 
+                ?, ?, ?, ?, ?,
+                ?, 'Y', ?,
+                1, 'Y', 'Y', 
+                'Y', 'N', 'N', 
+                'N', 'Y', '.', 
+                'CP_Drtn', 1000, 10, 
+                10, 2, 500, 
+                0.0, 0.0, 'DT_FixedDUR2', 
+                'A', 'QT_Hour', 'COST_PER_QTY', 
+                'N', 'Y', 'TT_Task', 
+                'Y', 'CT_TotFloat', 'Y', 
+                'Y', 'Y', 
+                'Y', 'N', 'N', 
+                'SL_Taskrsrc', 1, ?
+            )
+        """
+        cursor.execute(sql_proj, (
+            proj_id, short_name, None, 
+            now, now, now, "Agent", "Agent",
+            start_date, clndr_id, proj_guid
+        ))
+        
+        # 3. Insert Root WBS
+        # Updated STATUS_CODE to 'WS_Open' and added defaults
+        # Added GUID
+        sql_wbs = """
+            INSERT INTO PROJWBS (
+                WBS_ID, PROJ_ID, WBS_SHORT_NAME, WBS_NAME, 
+                PROJ_NODE_FLAG, STATUS_CODE, SEQ_NUM,
+                CREATE_DATE, UPDATE_DATE, CREATE_USER, UPDATE_USER,
+                PARENT_WBS_ID, OBS_ID,
+                EST_WT, EV_USER_PCT, EV_ETC_USER_VALUE, 
+                EV_COMPUTE_TYPE, EV_ETC_COMPUTE_TYPE, GUID
+            ) VALUES (
+                ?, ?, ?, ?, 'Y', 'WS_Open', 1, 
+                ?, ?, ?, ?, 
+                ?, ?,
+                1.0, 6, 0.88, 
+                'EC_Cmp_pct', 'EE_Rem_hr', ?
+            )
+        """
+        cursor.execute(sql_wbs, (
+            wbs_id, proj_id, short_name, long_name,
+            now, now, "Agent", "Agent",
+            parent_wbs_id, obs_id, wbs_guid
+        ))
+        
+        return proj_id

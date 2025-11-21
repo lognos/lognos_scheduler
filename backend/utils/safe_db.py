@@ -48,15 +48,23 @@ class SafeP6Transaction(ContextDecorator):
         return self.conn
 
     def __exit__(self, exc_type, exc_value, traceback):
-        # Close connection first so we can move/delete the file
-        if self.conn:
-            self.conn.close()
-
         if exc_type:
             # An error occurred in the code block, discard temp
             logfire.warn(f"Exception during DB operation: {exc_value}. Discarding changes.")
+            if self.conn:
+                self.conn.close()
             self._cleanup_temp()
             return False # Propagate exception
+
+        # Success path: Commit changes to temp DB
+        try:
+            if self.conn:
+                self.conn.commit()
+                self.conn.close()
+        except Exception as e:
+            logfire.error(f"Failed to commit/close temp DB: {e}")
+            self._cleanup_temp()
+            raise
 
         # 3. Check Integrity
         if not self._check_integrity():
