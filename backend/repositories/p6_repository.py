@@ -200,7 +200,7 @@ class P6Repository:
             return (row[0], row[1])
         return None
 
-    def create_project(self, conn: sqlite3.Connection, short_name: str, long_name: str, planned_start: Optional[datetime] = None) -> int:
+    def create_project(self, conn: sqlite3.Connection, short_name: str, long_name: str, planned_start: Optional[datetime] = None) -> tuple[int, int]:
         cursor = conn.cursor()
         
         # 1. IDs
@@ -296,4 +296,91 @@ class P6Repository:
             parent_wbs_id, obs_id, wbs_guid
         ))
         
-        return proj_id
+        return proj_id, wbs_id
+
+    def ensure_embeddings_table(self, conn: sqlite3.Connection) -> None:
+        """Ensures the TASK_EMBEDDINGS table exists."""
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS TASK_EMBEDDINGS (
+                TASK_ID INTEGER PRIMARY KEY,
+                PROJ_ID INTEGER NOT NULL,
+                EMBEDDING_VECTOR BLOB NOT NULL,
+                SOURCE_TEXT_HASH TEXT NOT NULL,
+                LAST_UPDATED DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (TASK_ID) REFERENCES TASK(TASK_ID) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS IDX_TASK_EMBEDDINGS_PROJ ON TASK_EMBEDDINGS(PROJ_ID)")
+
+    def upsert_task_embedding(self, conn: sqlite3.Connection, task_id: int, proj_id: int, embedding: bytes, source_hash: str) -> None:
+        """Inserts or updates a task embedding."""
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO TASK_EMBEDDINGS (TASK_ID, PROJ_ID, EMBEDDING_VECTOR, SOURCE_TEXT_HASH, LAST_UPDATED)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(TASK_ID) DO UPDATE SET
+                EMBEDDING_VECTOR = excluded.EMBEDDING_VECTOR,
+                SOURCE_TEXT_HASH = excluded.SOURCE_TEXT_HASH,
+                LAST_UPDATED = excluded.LAST_UPDATED
+        """, (task_id, proj_id, embedding, source_hash, datetime.now()))
+
+    def get_project_embeddings(self, conn: sqlite3.Connection, proj_id: int) -> list[tuple[int, bytes]]:
+        """Retrieves all embeddings for a project."""
+        cursor = conn.cursor()
+        cursor.execute("SELECT TASK_ID, EMBEDDING_VECTOR FROM TASK_EMBEDDINGS WHERE PROJ_ID = ?", (proj_id,))
+        return cursor.fetchall()
+
+    def get_task_text_data(self, conn: sqlite3.Connection, proj_id: int) -> list[tuple[int, str, str, str, str]]:
+        """
+        Fetches Task ID, Code, Name, Memo content, and WBS Path for embedding generation.
+        """
+        cursor = conn.cursor()
+        
+        # Recursive CTE to build WBS Path (e.g., "Project > Phase 1 > Earthworks")
+        # We start with the Project Root Node (PROJ_NODE_FLAG = 'Y')
+        sql = """
+            WITH RECURSIVE WBS_PATH(WBS_ID, PATH_NAME) AS (
+                SELECT WBS_ID, WBS_NAME
+                FROM PROJWBS
+                WHERE PROJ_ID = ? AND PROJ_NODE_FLAG = 'Y'
+                
+                UNION ALL
+                
+                SELECT w.WBS_ID, wp.PATH_NAME || ' > ' || w.WBS_NAME
+                FROM PROJWBS w
+                JOIN WBS_PATH wp ON w.PARENT_WBS_ID = wp.WBS_ID
+                WHERE w.PROJ_ID = ?
+            )
+            SELECT t.TASK_ID, t.TASK_CODE, t.TASK_NAME, 
+                   COALESCE(tm.TASK_MEMO, '') as MEMO,
+                   COALESCE(wp.PATH_NAME, '') as WBS_PATH
+            FROM TASK t
+            LEFT JOIN WBS_PATH wp ON t.WBS_ID = wp.WBS_ID
+            LEFT JOIN TASKMEMO tm ON t.TASK_ID = tm.TASK_ID
+            WHERE t.PROJ_ID = ?
+        """
+        try:
+            cursor.execute(sql, (proj_id, proj_id, proj_id))
+            return cursor.fetchall()
+        except sqlite3.OperationalError:
+            # Fallback if TASKMEMO doesn't exist or schema is different
+            # Still try to get WBS Path without Memo
+            sql_fallback = """
+                WITH RECURSIVE WBS_PATH(WBS_ID, PATH_NAME) AS (
+                    SELECT WBS_ID, WBS_NAME
+                    FROM PROJWBS
+                    WHERE PROJ_ID = ? AND PROJ_NODE_FLAG = 'Y'
+                    UNION ALL
+                    SELECT w.WBS_ID, wp.PATH_NAME || ' > ' || w.WBS_NAME
+                    FROM PROJWBS w
+                    JOIN WBS_PATH wp ON w.PARENT_WBS_ID = wp.WBS_ID
+                    WHERE w.PROJ_ID = ?
+                )
+                SELECT t.TASK_ID, t.TASK_CODE, t.TASK_NAME, '', COALESCE(wp.PATH_NAME, '')
+                FROM TASK t
+                LEFT JOIN WBS_PATH wp ON t.WBS_ID = wp.WBS_ID
+                WHERE t.PROJ_ID = ?
+            """
+            cursor.execute(sql_fallback, (proj_id, proj_id, proj_id))
+            return cursor.fetchall()

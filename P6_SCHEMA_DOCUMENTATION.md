@@ -401,7 +401,7 @@ erDiagram
 - **PROJTHRS** - Project thresholds
 - **PROJSHAR** - Project sharing/permissions
 
-### Task Management (11 tables)
+### Task Management (12 tables)
 - **TASK** - Activities/tasks
 - **TASKPRED** - Task predecessors/relationships
 - **TASKRSRC** - Task resource assignments
@@ -413,6 +413,7 @@ erDiagram
 - **TASKFIN** - Task financials
 - **TASKRISK** - Task risks
 - **TASKFDBK** - Task feedback
+- **TASK_EMBEDDINGS** - Vector embeddings for semantic search
 
 ### Resources (16 tables)
 - **RSRC** - Resource master
@@ -515,7 +516,29 @@ erDiagram
 - **EXPPROJ** - Exported projects
 - **PKXREF** - Primary key cross-reference
 
-### Portfolios (3 tables)
+## AI & Vector Search
+
+### Vector Embeddings
+
+```mermaid
+erDiagram
+    TASK ||--o| TASK_EMBEDDINGS : "has embedding"
+    
+    TASK_EMBEDDINGS {
+        int TASK_ID PK
+        int PROJ_ID FK
+        blob EMBEDDING_VECTOR
+        string SOURCE_TEXT_HASH
+        datetime LAST_UPDATED
+    }
+```
+
+**Key Tables:**
+- **TASK_EMBEDDINGS**: Stores vector embeddings for task descriptions and context (WBS path) to enable semantic search.
+
+---
+
+## Portfolios (3 tables)
 - **PFOLIO** - Project portfolios
 - **PRPFOLIO** - Project-portfolio links
 - **RSRFOLIO** - Resource-portfolio links
@@ -589,7 +612,7 @@ erDiagram
 
 ## Database Statistics
 
-- **Total Tables**: 124
+- **Total Tables**: 125
 - **Core Entity Tables**: ~30
 - **Supporting/Lookup Tables**: ~40
 - **Category/Code Tables**: ~15

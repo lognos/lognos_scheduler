@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from backend.agents.scheduling_agent import scheduling_agent
 from backend.tools.p6_tools import AgentDeps
 from backend.services.scheduling_service import SchedulingService
+from backend.services.vector_service import VectorService
 from backend.models.io import AgentResponse
 from backend.utils.safe_db import SafeP6Transaction
 
@@ -15,6 +16,7 @@ class ChatRequest(BaseModel):
 @router.post("/chat", response_model=AgentResponse)
 async def chat(req: ChatRequest):
     service = SchedulingService()
+    vector_service = VectorService()
     
     # Optimization: Use Session-Level Transaction
     # We wrap the entire agent execution in a single SafeP6Transaction.
@@ -23,7 +25,7 @@ async def chat(req: ChatRequest):
     # This avoids O(N) file copies for N tool calls.
     try:
         with SafeP6Transaction() as conn:
-            deps = AgentDeps(service=service, conn=conn)
+            deps = AgentDeps(service=service, vector_service=vector_service, conn=conn)
             
             import logfire
             # Run the agent

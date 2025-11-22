@@ -6,4 +6,6 @@ pydantic>=2.0
 pydantic-ai
 pydantic-settings
 logfire
+numpy
+google-generativeai
 

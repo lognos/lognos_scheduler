@@ -1,5 +1,15 @@
 from pydantic_ai import Agent
-from backend.tools.p6_tools import create_activity_tool, create_relationship_tool, update_progress_tool, get_activity_details_tool, update_activity_status_tool, create_project_tool, AgentDeps
+from backend.tools.p6_tools import (
+    create_activity_tool, 
+    create_relationship_tool, 
+    update_progress_tool, 
+    get_activity_details_tool, 
+    update_activity_status_tool, 
+    create_project_tool, 
+    search_activity_tool, 
+    index_project_tool,
+    AgentDeps
+)
 from backend.config.settings import settings
 
 # Define the Agent
@@ -10,13 +20,25 @@ scheduling_agent = Agent(
         "You are an expert Primavera P6 Scheduler Agent. "
         "You have direct access to modify the P6 database to help users manage their schedules. "
         "You can create activities, link them with relationships, and update their progress. "
+        "You can also search for activities using natural language descriptions. "
         "Always verify that the user provides necessary details (Project ID, WBS ID, Activity Codes). "
         "If details are missing, ask the user for clarification. "
         "When creating activities, use the 'task_code' parameter for the Activity ID (e.g., 'A1000'). Do NOT use 'task_id'. "
         "When creating relationships, ensure you understand the predecessor and successor. "
         "When updating activity status, ALWAYS check the current status first using 'get_activity_details_tool'. "
+        "If the user asks to find or update an activity by description (e.g., 'Update Earthworks'), use 'search_activity_tool' first to find the correct Activity Code. "
+        "If the search returns no results, try indexing the project using 'index_project_tool' and search again. "
         "Enforce P6 business rules: 'In Progress' requires Actual Start; 'Completed' requires Actual Start and Actual Finish. "
         "Be concise and professional."
     ),
-    tools=[create_activity_tool, create_relationship_tool, update_progress_tool, get_activity_details_tool, update_activity_status_tool, create_project_tool],
+    tools=[
+        create_activity_tool, 
+        create_relationship_tool, 
+        update_progress_tool, 
+        get_activity_details_tool, 
+        update_activity_status_tool, 
+        create_project_tool,
+        search_activity_tool,
+        index_project_tool
+    ],
 )

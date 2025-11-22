@@ -150,14 +150,14 @@ class SchedulingService:
             safe_conn.commit()
             return result
 
-    def create_project(self, req: ProjectCreateRequest, conn=None) -> int:
+    def create_project(self, req: ProjectCreateRequest, conn=None) -> tuple[int, int]:
         if conn:
             return self.repo.create_project(conn, req.project_short_name, req.project_name, req.planned_start_date)
             
         with SafeP6Transaction() as safe_conn:
-            proj_id = self.repo.create_project(safe_conn, req.project_short_name, req.project_name, req.planned_start_date)
+            proj_id, wbs_id = self.repo.create_project(safe_conn, req.project_short_name, req.project_name, req.planned_start_date)
             safe_conn.commit()
-            return proj_id
+            return proj_id, wbs_id
 
     def _create_relationship_impl(self, conn, req: RelationshipCreateRequest) -> int:
         # Get Task IDs

@@ -94,3 +94,12 @@ class ActivityStatusUpdateRequest(BaseModel):
 class AgentResponse(BaseModel):
     response: str
     tool_calls: list[dict] = []
+
+class SearchActivityRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+    query: str = Field(..., description="Natural language query describing the activity (e.g., 'Update Earthworks')")
+    proj_id: int = Field(..., description="Project ID context")
+
+class IndexProjectRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+    proj_id: int = Field(..., description="Project ID to index")
