@@ -21,7 +21,7 @@ async def search_activity_tool(ctx: RunContext[AgentDeps], req: SearchActivityRe
         return "Vector search service is not available."
     
     try:
-        results = ctx.deps.vector_service.search_activities(req.query, req.proj_id, conn=ctx.deps.conn)
+        results = ctx.deps.vector_service.search_activities(req.query, req.proj_id, threshold=0.5, conn=ctx.deps.conn)
         if not results:
             return "No matching activities found."
         
@@ -84,6 +84,7 @@ async def index_project_tool(ctx: RunContext[AgentDeps], req: IndexProjectReques
 async def get_activity_details_tool(ctx: RunContext[AgentDeps], req: ActivityDetailsRequest) -> dict | str:
     """
     Retrieves current details (status, dates, % complete) for an activity.
+    Returns: status_code, phys_complete_pct, act_start_date, act_end_date, target_start_date (Planned Start), target_end_date (Planned Finish).
     """
     try:
         return ctx.deps.service.get_activity_details(req, conn=ctx.deps.conn)

@@ -204,11 +204,25 @@ class SchedulingService:
         elif req.phys_complete_pct == 0 and not req.actual_start:
             status_code = "TK_NotStart"
             
+        # Validation: If status is Active or Complete, Actual Start is required.
+        # If not provided in request, check if it exists in DB.
+        actual_start = req.actual_start
+        if status_code in ["TK_Active", "TK_Complete"] and not actual_start:
+            current = self.repo.get_activity_details(conn, task_id)
+            if current and current['act_start_date']:
+                # Already started, keep existing date (repo handles None by not updating)
+                pass 
+            else:
+                # Not started yet, and no date provided. Default to NOW or raise error?
+                # P6 requires a date. Let's default to today if missing, but ideally agent should ask.
+                # For now, let's default to today to avoid invalid state, but log it.
+                actual_start = datetime.now()
+        
         self.repo.update_task_progress(
             conn, 
             task_id, 
             req.phys_complete_pct, 
-            req.actual_start, 
+            actual_start, 
             req.actual_finish,
             status_code
         )

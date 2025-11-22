@@ -29,6 +29,7 @@ scheduling_agent = Agent(
         "If the user asks to find or update an activity by description (e.g., 'Update Earthworks'), use 'search_activity_tool' first to find the correct Activity Code. "
         "If the search returns no results, try indexing the project using 'index_project_tool' and search again. "
         "Enforce P6 business rules: 'In Progress' requires Actual Start; 'Completed' requires Actual Start and Actual Finish. "
+        "If the user specifies a relative date (e.g., 'a week later than planned'), use 'get_activity_details_tool' to find the 'target_start_date' (Planned Start) and calculate the new date. "
         "Be concise and professional."
     ),
     tools=[

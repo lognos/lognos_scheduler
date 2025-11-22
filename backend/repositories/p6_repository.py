@@ -42,7 +42,7 @@ class P6Repository:
     def get_activity_details(self, conn: sqlite3.Connection, task_id: int) -> Optional[dict]:
         cursor = conn.cursor()
         sql = """
-            SELECT STATUS_CODE, PHYS_COMPLETE_PCT, ACT_START_DATE, ACT_END_DATE 
+            SELECT STATUS_CODE, PHYS_COMPLETE_PCT, ACT_START_DATE, ACT_END_DATE, TARGET_START_DATE, TARGET_END_DATE
             FROM TASK WHERE TASK_ID = ?
         """
         cursor.execute(sql, (task_id,))
@@ -52,7 +52,9 @@ class P6Repository:
                 "status_code": row[0],
                 "phys_complete_pct": row[1],
                 "act_start_date": row[2],
-                "act_end_date": row[3]
+                "act_end_date": row[3],
+                "target_start_date": row[4],
+                "target_end_date": row[5]
             }
         return None
 
