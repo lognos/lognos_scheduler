@@ -21,6 +21,20 @@ class RelationshipCreateRequest(BaseModel):
     pred_type: Literal["PR_FS", "PR_SS", "PR_FF", "PR_SF"] = Field(default="PR_FS", description="Relationship Type")
     lag: float = Field(default=0.0, description="Lag in hours")
 
+class RelationshipDeleteRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+    pred_task_code: str = Field(..., description="Predecessor Activity ID")
+    succ_task_code: str = Field(..., description="Successor Activity ID")
+    proj_id: int = Field(..., description="Project ID context")
+
+class RelationshipUpdateRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+    pred_task_code: str = Field(..., description="Predecessor Activity ID")
+    succ_task_code: str = Field(..., description="Successor Activity ID")
+    proj_id: int = Field(..., description="Project ID context")
+    new_lag: Optional[float] = Field(None, description="New Lag in hours")
+    new_type: Optional[Literal["PR_FS", "PR_SS", "PR_FF", "PR_SF"]] = Field(None, description="New Relationship Type")
+
 class ProjectCreateRequest(BaseModel):
     model_config = ConfigDict(strict=True)
     project_short_name: str = Field(..., description="Unique Project Short Name (e.g., 'PROJ-001')")

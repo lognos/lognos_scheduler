@@ -144,6 +144,34 @@ class P6Repository:
         ))
         return rel_id
 
+    def get_relationship_id(self, conn: sqlite3.Connection, pred_id: int, succ_id: int) -> Optional[int]:
+        cursor = conn.cursor()
+        cursor.execute("SELECT TASK_PRED_ID FROM TASKPRED WHERE PRED_TASK_ID = ? AND TASK_ID = ?", (pred_id, succ_id))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def delete_relationship(self, conn: sqlite3.Connection, task_pred_id: int) -> None:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM TASKPRED WHERE TASK_PRED_ID = ?", (task_pred_id,))
+
+    def update_relationship(self, conn: sqlite3.Connection, task_pred_id: int, lag: Optional[float], rel_type: Optional[str]) -> None:
+        cursor = conn.cursor()
+        updates = ["UPDATE_DATE = ?"]
+        params = [datetime.now()]
+        
+        if lag is not None:
+            updates.append("LAG_HR_CNT = ?")
+            params.append(lag)
+            
+        if rel_type:
+            updates.append("PRED_TYPE = ?")
+            params.append(rel_type)
+            
+        params.append(task_pred_id)
+        
+        sql = f"UPDATE TASKPRED SET {', '.join(updates)} WHERE TASK_PRED_ID = ?"
+        cursor.execute(sql, params)
+
     def update_task_progress(self, conn: sqlite3.Connection, task_id: int, 
                            phys_complete_pct: float, 
                            actual_start: Optional[datetime], 

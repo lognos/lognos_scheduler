@@ -1,4 +1,4 @@
-from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest
+from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, RelationshipDeleteRequest, RelationshipUpdateRequest
 from backend.models.domain import P6Activity, P6Relationship
 from backend.utils.db import get_db_connection
 from backend.utils.safe_db import SafeP6Transaction
@@ -8,6 +8,56 @@ from datetime import datetime
 class SchedulingService:
     def __init__(self):
         self.repo = P6Repository()
+
+    def delete_relationship(self, req: RelationshipDeleteRequest, conn=None) -> str:
+        if conn:
+            return self._delete_relationship_impl(conn, req)
+        with SafeP6Transaction() as safe_conn:
+            result = self._delete_relationship_impl(safe_conn, req)
+            safe_conn.commit()
+            return result
+
+    def _delete_relationship_impl(self, conn, req: RelationshipDeleteRequest) -> str:
+        pred_id = self.repo.get_task_id_by_code(conn, req.pred_task_code, req.proj_id)
+        succ_id = self.repo.get_task_id_by_code(conn, req.succ_task_code, req.proj_id)
+        
+        if not pred_id:
+            raise ValueError(f"Predecessor {req.pred_task_code} not found")
+        if not succ_id:
+            raise ValueError(f"Successor {req.succ_task_code} not found")
+            
+        rel_id = self.repo.get_relationship_id(conn, pred_id, succ_id)
+        if not rel_id:
+            raise ValueError(f"Relationship {req.pred_task_code} -> {req.succ_task_code} does not exist")
+            
+        self.repo.delete_relationship(conn, rel_id)
+        conn.commit()
+        return f"Deleted relationship {req.pred_task_code} -> {req.succ_task_code}"
+
+    def update_relationship(self, req: RelationshipUpdateRequest, conn=None) -> str:
+        if conn:
+            return self._update_relationship_impl(conn, req)
+        with SafeP6Transaction() as safe_conn:
+            result = self._update_relationship_impl(safe_conn, req)
+            safe_conn.commit()
+            return result
+
+    def _update_relationship_impl(self, conn, req: RelationshipUpdateRequest) -> str:
+        pred_id = self.repo.get_task_id_by_code(conn, req.pred_task_code, req.proj_id)
+        succ_id = self.repo.get_task_id_by_code(conn, req.succ_task_code, req.proj_id)
+        
+        if not pred_id:
+            raise ValueError(f"Predecessor {req.pred_task_code} not found")
+        if not succ_id:
+            raise ValueError(f"Successor {req.succ_task_code} not found")
+            
+        rel_id = self.repo.get_relationship_id(conn, pred_id, succ_id)
+        if not rel_id:
+            raise ValueError(f"Relationship {req.pred_task_code} -> {req.succ_task_code} does not exist")
+            
+        self.repo.update_relationship(conn, rel_id, req.new_lag, req.new_type)
+        conn.commit()
+        return f"Updated relationship {req.pred_task_code} -> {req.succ_task_code}"
 
     def get_activity_details(self, req: ActivityDetailsRequest, conn=None) -> dict:
         # If a connection is provided (e.g. from a transaction), use it to ensure we see uncommitted changes.

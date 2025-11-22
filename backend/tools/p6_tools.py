@@ -2,7 +2,7 @@ from pydantic_ai import RunContext
 import logfire
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
-from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, SearchActivityRequest, IndexProjectRequest
+from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, SearchActivityRequest, IndexProjectRequest, RelationshipDeleteRequest, RelationshipUpdateRequest
 
 # We define the dependencies class
 class AgentDeps:
@@ -10,6 +10,28 @@ class AgentDeps:
         self.service = service
         self.vector_service = vector_service
         self.conn = conn
+
+@logfire.instrument("delete_relationship_tool")
+async def delete_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipDeleteRequest) -> str:
+    """
+    Deletes an existing relationship between two activities.
+    """
+    try:
+        return ctx.deps.service.delete_relationship(req, conn=ctx.deps.conn)
+    except Exception as e:
+        logfire.error("Error in delete_relationship_tool", error=str(e))
+        return f"Error deleting relationship: {str(e)}"
+
+@logfire.instrument("update_relationship_tool")
+async def update_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipUpdateRequest) -> str:
+    """
+    Updates an existing relationship (Lag or Type).
+    """
+    try:
+        return ctx.deps.service.update_relationship(req, conn=ctx.deps.conn)
+    except Exception as e:
+        logfire.error("Error in update_relationship_tool", error=str(e))
+        return f"Error updating relationship: {str(e)}"
 
 @logfire.instrument("search_activity_tool")
 async def search_activity_tool(ctx: RunContext[AgentDeps], req: SearchActivityRequest) -> str:
