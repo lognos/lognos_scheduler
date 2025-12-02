@@ -47,7 +47,7 @@ export function ChatWithHistory() {
         try {
             // Fetch messages via API
             const response = await fetch(
-                `/api/v1/conversations/${conversationId}?user_email=${encodeURIComponent(user?.email || '')}`
+                `http://localhost:8500/api/v1/conversations/${conversationId}?user_email=${encodeURIComponent(user?.email || '')}`
             );
 
             if (response.status === 404) {

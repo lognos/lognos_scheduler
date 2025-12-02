@@ -10,9 +10,15 @@ class Settings(BaseSettings):
     # App
     APP_NAME: str = "P6 Scheduling Agent"
     DEBUG: bool = False
+    PORT: int = Field(default=8500, description="Server port")
 
-    # Database
+    # Database - P6 SQLite
     P6_DB_LOC: str = Field(default="p6.db", description="Path to the P6 SQLite database file")
+
+    # Database - Supabase
+    SUPABASE_URL: str = Field(..., description="Supabase project URL")
+    SUPABASE_ANON_KEY: str = Field(..., description="Supabase anon key")
+    SUPABASE_SERVICE_ROLE_KEY: str | None = Field(default=None, description="Supabase service role key (optional)")
 
     # AI
     GEMINI_API_KEY: str = Field(..., alias="GOOGLE_API_KEY", description="Google Gemini API Key")

@@ -44,7 +44,7 @@ export function useConversations(userEmail: string) {
 
         try {
             const response = await fetch(
-                `/api/v1/conversations?user_email=${encodeURIComponent(userEmail)}`,
+                `http://localhost:8500/api/v1/conversations?user_email=${encodeURIComponent(userEmail)}`,
                 {
                     headers: {
                         ...(currentProject ? { 'Lognos-ProjectID': currentProject.project_id } : {}),
@@ -76,7 +76,7 @@ export function useConversations(userEmail: string) {
         setConversations(prev => prev.filter(c => c.conversation_id !== id));
 
         try {
-            const response = await fetch(`/api/v1/conversations/${id}?user_email=${encodeURIComponent(userEmail)}`, {
+            const response = await fetch(`http://localhost:8500/api/v1/conversations/${id}?user_email=${encodeURIComponent(userEmail)}`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
@@ -102,7 +102,7 @@ export function useConversations(userEmail: string) {
     const loadConversation = useCallback(async (id: string) => {
         try {
             const response = await fetch(
-                `/api/v1/conversations/${id}?user_email=${encodeURIComponent(userEmail)}`,
+                `http://localhost:8500/api/v1/conversations/${id}?user_email=${encodeURIComponent(userEmail)}`,
                 {
                     headers: {
                         ...(currentProject ? { 'Lognos-ProjectID': currentProject.project_id } : {}),

@@ -18,6 +18,9 @@ export const ThinkingIndicator: React.FC<ThinkingIndicatorProps> = ({ state }) =
             case 'Orchestrator': return t('agentStates.orchestrating');
             case 'RiskAgent': return t('agentStates.analyzingRisk');
             case 'CommunicationsAgent': return t('agentStates.draftingCommunication');
+            case 'Scheduling': return 'ANALYZING SCHEDULE';
+            case 'Processing': return 'PROCESSING REQUEST';
+            case 'ToolCall': return 'EXECUTING ACTION';
             case 'Error': return t('agentStates.error');
             default: return node.toUpperCase();
         }

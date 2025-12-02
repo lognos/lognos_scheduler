@@ -64,7 +64,7 @@ export function useAGUIStream() {
 
         try {
             // Bypass Next.js proxy and hit backend directly to avoid buffering
-            const response = await fetch('http://localhost:8400/api/v1/graph/chat', {
+            const response = await fetch('http://localhost:8500/api/v1/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
