@@ -827,6 +827,20 @@ async def load_schedule_to_workspace_tool(
         relationships_df = pd.DataFrame(schedule_data['relationships'])
         activity_codes_df = pd.DataFrame(schedule_data['activity_codes'])
         
+        # Parse P6 project dates
+        p6_start = None
+        p6_finish = None
+        if project_info.get('plan_start_date'):
+            try:
+                p6_start = pd.to_datetime(project_info['plan_start_date']).date()
+            except Exception:
+                pass
+        if project_info.get('plan_end_date'):
+            try:
+                p6_finish = pd.to_datetime(project_info['plan_end_date']).date()
+            except Exception:
+                pass
+        
         # Load into workspace
         workspace = schedule_state_manager.load_from_p6(
             conversation_id=req.conversation_id,
@@ -835,27 +849,15 @@ async def load_schedule_to_workspace_tool(
             activities_df=activities_df,
             relationships_df=relationships_df,
             activity_codes_df=activity_codes_df,
-            code_types_with_values=schedule_data['available_codes']
+            code_types_with_values=schedule_data['available_codes'],
+            project_start=p6_start,
+            project_finish=p6_finish
         )
         
-        # Build summary
+        # Return minimal summary to reduce token usage in conversation history
+        # Rich data is already in the workspace and will be streamed to frontend
         activity_count = workspace.get_activity_count()
-        relationship_count = workspace.get_relationship_count()
-        code_types = list(schedule_data['available_codes'].keys())
-        
-        summary_lines = [
-            f"Loaded schedule for project '{project_info.get('project_name', 'Unknown')}' (ID: {req.proj_id})",
-            f"",
-            f"Schedule Summary:",
-            f"  - Activities: {activity_count}",
-            f"  - Relationships: {relationship_count}",
-            f"  - Activity Code Types: {len(code_types)} ({', '.join(code_types[:5])}{'...' if len(code_types) > 5 else ''})",
-            f"",
-            f"Use calculate_and_display_gantt_tool to visualize the schedule.",
-            f"Available filters: WBS path, date range, critical path, status, activity codes."
-        ]
-        
-        return "\n".join(summary_lines)
+        return f"Loaded '{project_info.get('project_name', 'Unknown')}': {activity_count} activities. Ready for calculate_and_display_gantt_tool."
         
     except ValueError as e:
         return f"Error loading schedule: {e}"
@@ -1002,27 +1004,10 @@ async def calculate_and_display_gantt_tool(
         if hasattr(ctx.deps, 'gantt_event_queue'):
             ctx.deps.gantt_event_queue.append(gantt_event)
         
-        # Build response summary
-        summary_lines = [
-            f"Gantt chart displayed for '{workspace.project_name}'",
-            f"",
-            f"Schedule Statistics:",
-            f"  - Project Start: {result.project_start.isoformat()}",
-            f"  - Project Finish: {result.project_finish.isoformat()}",
-            f"  - Critical Path Length: {result.critical_path_length_days:.1f} work days",
-            f"  - Critical Activities: {len(result.critical_path_ids)}",
-            f"",
-            f"Displayed: {len(gantt_items)} of {workspace.get_activity_count()} activities",
-            f"Filter: {filter_desc}",
-        ]
-        
-        if result.warnings:
-            summary_lines.append("")
-            summary_lines.append("Warnings:")
-            for warning in result.warnings[:5]:
-                summary_lines.append(f"  - {warning}")
-        
-        return "\n".join(summary_lines)
+        # Return minimal summary - full data already streamed to frontend via gantt_event
+        # This reduces token accumulation in conversation history
+        warning_note = f" ({len(result.warnings)} warnings)" if result.warnings else ""
+        return f"Gantt displayed: {len(gantt_items)}/{workspace.get_activity_count()} activities, {result.critical_path_length_days:.0f} day critical path{warning_note}"
         
     except Exception as e:
         logfire.error("Error in calculate_and_display_gantt_tool", error=str(e))
@@ -1079,24 +1064,9 @@ async def get_workspace_status_tool(ctx: RunContext[AgentDeps], conversation_id:
         if not workspace:
             return "No schedule workspace active. Use load_schedule_to_workspace_tool to load a schedule."
         
-        lines = [
-            f"Schedule Workspace Status:",
-            f"  - Project: {workspace.project_name or 'New Schedule'} (ID: {workspace.project_id or 'Not saved'})",
-            f"  - Source: {workspace.source}",
-            f"  - Activities: {workspace.get_activity_count()}",
-            f"  - Relationships: {workspace.get_relationship_count()}",
-            f"  - Modified: {'Yes' if workspace.is_modified else 'No'}",
-            f"  - Last Calculation: {workspace.last_calculation_at.isoformat() if workspace.last_calculation_at else 'Never'}",
-        ]
-        
-        if workspace.project_start and workspace.project_finish:
-            lines.append(f"  - Project Dates: {workspace.project_start} to {workspace.project_finish}")
-            lines.append(f"  - Critical Activities: {len(workspace.critical_path_ids)}")
-        
-        if workspace.code_types_with_values:
-            lines.append(f"  - Activity Code Types: {', '.join(workspace.code_types_with_values.keys())}")
-        
-        return "\n".join(lines)
+        # Minimal response to reduce token usage
+        modified = "modified" if workspace.is_modified else "unmodified"
+        return f"Workspace: '{workspace.project_name}', {workspace.get_activity_count()} activities, {modified}"
         
     except Exception as e:
         logfire.error("Error in get_workspace_status_tool", error=str(e))
@@ -1178,7 +1148,8 @@ async def modify_activity_in_workspace_tool(
         workspace.is_modified = True
         
         task_code = workspace.activities_df.loc[mask, 'task_code'].values[0]
-        return f"Modified activity {task_code} (ID: {task_id}):\n" + "\n".join(f"  - {c}" for c in changes) + "\n\nUse calculate_and_display_gantt to see the schedule impact."
+        # Minimal response to reduce token usage
+        return f"Modified {task_code}: {', '.join(changes)}. Run calculate_and_display_gantt to see impact."
         
     except Exception as e:
         logfire.error("Error in modify_activity_in_workspace_tool", error=str(e))
@@ -1258,7 +1229,8 @@ async def add_activity_to_workspace_tool(
         
         workspace.is_modified = True
         
-        return f"Added new activity:\n  - Task ID: {new_task_id} (temporary, will be assigned by DB on save)\n  - Code: {task_code}\n  - Name: {task_name}\n  - Duration: {original_duration_hours}h ({original_duration_hours/8:.1f} days)\n\nUse add_relationship_to_workspace to connect this activity to others."
+        # Minimal response to reduce token usage
+        return f"Added activity '{task_code}' ({task_name}, {original_duration_hours}h). Use add_relationship_to_workspace to connect it."
         
     except Exception as e:
         logfire.error("Error in add_activity_to_workspace_tool", error=str(e))
@@ -1349,7 +1321,8 @@ async def add_relationship_to_workspace_tool(
         
         lag_str = f" + {lag_hours}h lag" if lag_hours > 0 else f" - {abs(lag_hours)}h lead" if lag_hours < 0 else ""
         
-        return f"Added relationship:\n  '{pred_name}' --{relationship_type}{lag_str}--> '{succ_name}'\n\nUse calculate_and_display_gantt to see the schedule impact."
+        # Minimal response to reduce token usage
+        return f"Added {relationship_type}{lag_str} relationship: {pred_name} -> {succ_name}"
         
     except Exception as e:
         logfire.error("Error in add_relationship_to_workspace_tool", error=str(e))

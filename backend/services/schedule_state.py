@@ -261,7 +261,9 @@ class ScheduleStateManager:
         activities_df: pd.DataFrame,
         relationships_df: pd.DataFrame,
         activity_codes_df: Optional[pd.DataFrame] = None,
-        code_types_with_values: Optional[dict[str, list[str]]] = None
+        code_types_with_values: Optional[dict[str, list[str]]] = None,
+        project_start: Optional[date] = None,
+        project_finish: Optional[date] = None
     ) -> ScheduleWorkspace:
         """
         Load schedule data from P6 into a workspace.
@@ -295,7 +297,9 @@ class ScheduleStateManager:
             relationships_df=relationships_df,
             activity_codes_df=activity_codes_df if activity_codes_df is not None else pd.DataFrame(),
             code_types_with_values=code_types_with_values or {},
-            source="p6_loaded"
+            source="p6_loaded",
+            project_start=project_start,
+            project_finish=project_finish
         )
         self._workspaces[conversation_id] = workspace
         

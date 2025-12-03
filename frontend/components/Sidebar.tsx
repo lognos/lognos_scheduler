@@ -53,7 +53,7 @@ export const Sidebar: React.FC = () => {
                             <NavItem
                                 icon={<TextIcon text="RM" />}
                                 label={t('RISK MANAGER')}
-                                isActive
+
                                 isHovered={isHovered}
                             />
                         </li>
@@ -61,6 +61,7 @@ export const Sidebar: React.FC = () => {
                             <NavItem
                                 icon={<TextIcon text="SA" />}
                                 label={t('SCHEDULE ASSISTANT')}
+                                isActive
                                 isHovered={isHovered}
                             />
                         </li>
