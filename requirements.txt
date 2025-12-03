@@ -10,4 +10,5 @@ numpy
 google-generativeai
 supabase
 sse-starlette
+jinja2>=3.0
 
