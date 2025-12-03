@@ -34,10 +34,12 @@ class AgentDeps:
         service: The scheduling service for P6 operations.
         vector_service: Optional vector search service for semantic search.
         conn: Optional database connection for direct queries.
+        gantt_event_queue: Queue for gantt panel events to be streamed to frontend.
     """
     service: SchedulingService
     vector_service: Optional[VectorService] = None
     conn: Optional[object] = None
+    gantt_event_queue: Optional[list] = None
 
 @logfire.instrument("delete_relationship_tool")
 async def delete_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipDeleteRequest) -> str:
@@ -774,3 +776,581 @@ async def bulk_assign_activity_codes_tool(
     except Exception as e:
         logfire.error("Error in bulk_assign_activity_codes_tool", error=str(e))
         return f"Error in bulk assignment: {str(e)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Schedule Workspace & Gantt Tools
+# ─────────────────────────────────────────────────────────────────────────────────
+
+import pandas as pd
+from backend.services.schedule_state import schedule_state_manager, ScheduleWorkspace
+from backend.services.network_calculator import NetworkCalculator, CalculationResult, ScheduleValidationError
+from backend.models.io import (
+    LoadScheduleToWorkspaceRequest,
+    CalculateAndDisplayGanttRequest,
+)
+
+
+@logfire.instrument("load_schedule_to_workspace_tool")
+async def load_schedule_to_workspace_tool(
+    ctx: RunContext[AgentDeps], 
+    req: LoadScheduleToWorkspaceRequest
+) -> str:
+    """Load a P6 schedule into the working workspace for visualization and editing.
+    
+    Use this tool when the user wants to:
+    - View a schedule as a Gantt chart
+    - Analyze schedule data (critical path, float, etc.)
+    - Prepare for schedule modifications
+    
+    This loads ALL activities and relationships from P6 into memory.
+    After loading, use calculate_and_display_gantt_tool to show the Gantt chart.
+    
+    Args:
+        ctx: Runtime context with dependencies
+        req: Request containing proj_id and conversation_id
+    
+    Returns:
+        Summary of loaded schedule (activity count, relationship count, etc.)
+    """
+    try:
+        # Load schedule data from P6
+        schedule_data = ctx.deps.service.load_schedule_for_workspace(
+            req.proj_id, 
+            conn=ctx.deps.conn
+        )
+        
+        project_info = schedule_data['project_info']
+        
+        # Convert to DataFrames
+        activities_df = pd.DataFrame(schedule_data['activities'])
+        relationships_df = pd.DataFrame(schedule_data['relationships'])
+        activity_codes_df = pd.DataFrame(schedule_data['activity_codes'])
+        
+        # Load into workspace
+        workspace = schedule_state_manager.load_from_p6(
+            conversation_id=req.conversation_id,
+            project_id=req.proj_id,
+            project_name=project_info.get('project_name', 'Unknown'),
+            activities_df=activities_df,
+            relationships_df=relationships_df,
+            activity_codes_df=activity_codes_df,
+            code_types_with_values=schedule_data['available_codes']
+        )
+        
+        # Build summary
+        activity_count = workspace.get_activity_count()
+        relationship_count = workspace.get_relationship_count()
+        code_types = list(schedule_data['available_codes'].keys())
+        
+        summary_lines = [
+            f"Loaded schedule for project '{project_info.get('project_name', 'Unknown')}' (ID: {req.proj_id})",
+            f"",
+            f"Schedule Summary:",
+            f"  - Activities: {activity_count}",
+            f"  - Relationships: {relationship_count}",
+            f"  - Activity Code Types: {len(code_types)} ({', '.join(code_types[:5])}{'...' if len(code_types) > 5 else ''})",
+            f"",
+            f"Use calculate_and_display_gantt_tool to visualize the schedule.",
+            f"Available filters: WBS path, date range, critical path, status, activity codes."
+        ]
+        
+        return "\n".join(summary_lines)
+        
+    except ValueError as e:
+        return f"Error loading schedule: {e}"
+    except Exception as e:
+        logfire.error("Error in load_schedule_to_workspace_tool", error=str(e))
+        return f"Error loading schedule: {str(e)}"
+
+
+@logfire.instrument("calculate_and_display_gantt_tool")
+async def calculate_and_display_gantt_tool(
+    ctx: RunContext[AgentDeps], 
+    req: CalculateAndDisplayGanttRequest
+) -> str:
+    """Calculate CPM and display Gantt chart in the UI.
+    
+    Use this tool to:
+    - Show the Gantt chart panel to the user
+    - Recalculate schedule after modifications
+    - Apply filters to show a subset of activities
+    
+    FILTERING (all done in-memory, no database queries):
+    - filter_activity_codes: PRIMARY filter - dict of code_type -> list of values
+      Example: {"Phase": ["Construction"], "Area": ["Building A", "Building B"]}
+    - filter_wbs: Show only activities under this WBS path
+    - filter_critical_only: Show only critical path activities
+    - filter_status: Filter by status list
+    - filter_search: Search in task code/name
+    - filter_date_start/end: Date range filter
+    
+    Args:
+        ctx: Runtime context with dependencies
+        req: Request with conversation_id and optional filter parameters
+    
+    Returns:
+        Summary of displayed schedule and filter applied
+    """
+    try:
+        # Get workspace
+        workspace = schedule_state_manager.get(req.conversation_id)
+        if not workspace:
+            return "No schedule loaded. Use load_schedule_to_workspace_tool first."
+        
+        if workspace.activities_df.empty:
+            return "Schedule workspace is empty. Load a schedule first."
+        
+        # Run CPM calculation
+        calculator = NetworkCalculator(
+            activities_df=workspace.activities_df,
+            relationships_df=workspace.relationships_df,
+            project_start_date=workspace.project_start
+        )
+        
+        try:
+            result = calculator.calculate()
+        except ScheduleValidationError as e:
+            return f"Schedule validation failed: {'; '.join(e.errors)}"
+        
+        # Update workspace with calculation results
+        calc_df = pd.DataFrame([{
+            'task_id': a.task_id,
+            'early_start': a.early_start,
+            'early_finish': a.early_finish,
+            'late_start': a.late_start,
+            'late_finish': a.late_finish,
+            'total_float_days': a.total_float_days,
+            'free_float_days': a.free_float_days,
+            'is_critical': a.is_critical,
+            'status': a.status,
+        } for a in result.activities])
+        
+        workspace.update_from_calculation(
+            activities_with_dates=calc_df,
+            project_start=result.project_start,
+            project_finish=result.project_finish,
+            critical_path_ids=result.critical_path_ids
+        )
+        
+        # Apply filters (ALL IN-MEMORY - no database queries)
+        filtered_df = workspace.filter_activities(
+            wbs_path=req.filter_wbs,
+            date_start=req.filter_date_start,
+            date_end=req.filter_date_end,
+            critical_only=req.filter_critical_only,
+            status=req.filter_status,
+            search_term=req.filter_search,
+            activity_codes=req.filter_activity_codes
+        )
+        
+        # Build Gantt data for streaming
+        gantt_items = []
+        for _, row in filtered_df.iterrows():
+            gantt_items.append({
+                'id': int(row['task_id']),
+                's_item_id': row['task_code'],
+                's_item': row['task_name'],
+                'total_duration': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
+                'start': row['early_start'].isoformat() if pd.notna(row.get('early_start')) else '',
+                'finish': row['early_finish'].isoformat() if pd.notna(row.get('early_finish')) else '',
+                'is_critical': bool(row.get('is_critical', False)),
+                'wbs_path': row.get('wbs_path', ''),
+                'status': row.get('status', 'not_started'),
+            })
+        
+        # Build filter description
+        filter_parts = []
+        if req.filter_activity_codes:
+            for code_type, values in req.filter_activity_codes.items():
+                filter_parts.append(f"{code_type}={' or '.join(values)}")
+        if req.filter_wbs:
+            filter_parts.append(f"WBS={req.filter_wbs}")
+        if req.filter_critical_only:
+            filter_parts.append("Critical Path Only")
+        if req.filter_status:
+            filter_parts.append(f"Status={', '.join(req.filter_status)}")
+        if req.filter_search:
+            filter_parts.append(f"Search='{req.filter_search}'")
+        
+        filter_desc = " AND ".join(filter_parts) if filter_parts else "None"
+        
+        # Stream Gantt panel event to frontend
+        # This will be picked up by the AG-UI stream handler
+        gantt_event = {
+            'type': 'gantt_panel',
+            'action': 'show',
+            'data': {
+                'items': gantt_items,
+                'project_start': result.project_start.isoformat(),
+                'project_finish': result.project_finish.isoformat(),
+                'critical_path_length': result.critical_path_length_days,
+                'filter_applied': {
+                    'wbs_path': req.filter_wbs,
+                    'critical_only': req.filter_critical_only,
+                    'activity_codes': req.filter_activity_codes,
+                    'status': req.filter_status,
+                    'search_term': req.filter_search,
+                },
+                'total_activities': workspace.get_activity_count(),
+                'filtered_activities': len(gantt_items),
+                'available_activity_codes': workspace.code_types_with_values,
+            }
+        }
+        
+        # Store event for streaming (will be picked up by chat router)
+        if hasattr(ctx.deps, 'gantt_event_queue'):
+            ctx.deps.gantt_event_queue.append(gantt_event)
+        
+        # Build response summary
+        summary_lines = [
+            f"Gantt chart displayed for '{workspace.project_name}'",
+            f"",
+            f"Schedule Statistics:",
+            f"  - Project Start: {result.project_start.isoformat()}",
+            f"  - Project Finish: {result.project_finish.isoformat()}",
+            f"  - Critical Path Length: {result.critical_path_length_days:.1f} work days",
+            f"  - Critical Activities: {len(result.critical_path_ids)}",
+            f"",
+            f"Displayed: {len(gantt_items)} of {workspace.get_activity_count()} activities",
+            f"Filter: {filter_desc}",
+        ]
+        
+        if result.warnings:
+            summary_lines.append("")
+            summary_lines.append("Warnings:")
+            for warning in result.warnings[:5]:
+                summary_lines.append(f"  - {warning}")
+        
+        return "\n".join(summary_lines)
+        
+    except Exception as e:
+        logfire.error("Error in calculate_and_display_gantt_tool", error=str(e))
+        return f"Error displaying Gantt: {str(e)}"
+
+
+@logfire.instrument("hide_gantt_panel_tool")
+async def hide_gantt_panel_tool(ctx: RunContext[AgentDeps], conversation_id: str) -> str:
+    """Hide the Gantt panel from the UI.
+    
+    Use this tool when the user is done reviewing the schedule or
+    switches to a different topic.
+    
+    Args:
+        ctx: Runtime context
+        conversation_id: Conversation identifier
+    
+    Returns:
+        Confirmation message
+    """
+    try:
+        # Stream hide event to frontend
+        gantt_event = {
+            'type': 'gantt_panel',
+            'action': 'hide'
+        }
+        
+        if hasattr(ctx.deps, 'gantt_event_queue'):
+            ctx.deps.gantt_event_queue.append(gantt_event)
+        
+        return "Gantt panel hidden."
+        
+    except Exception as e:
+        logfire.error("Error in hide_gantt_panel_tool", error=str(e))
+        return f"Error hiding Gantt panel: {str(e)}"
+
+
+@logfire.instrument("get_workspace_status_tool")
+async def get_workspace_status_tool(ctx: RunContext[AgentDeps], conversation_id: str) -> str:
+    """Get the current status of the schedule workspace.
+    
+    Use this tool to check if a schedule is loaded and its current state.
+    
+    Args:
+        ctx: Runtime context
+        conversation_id: Conversation identifier
+    
+    Returns:
+        Workspace status summary
+    """
+    try:
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_to_workspace_tool to load a schedule."
+        
+        lines = [
+            f"Schedule Workspace Status:",
+            f"  - Project: {workspace.project_name or 'New Schedule'} (ID: {workspace.project_id or 'Not saved'})",
+            f"  - Source: {workspace.source}",
+            f"  - Activities: {workspace.get_activity_count()}",
+            f"  - Relationships: {workspace.get_relationship_count()}",
+            f"  - Modified: {'Yes' if workspace.is_modified else 'No'}",
+            f"  - Last Calculation: {workspace.last_calculation_at.isoformat() if workspace.last_calculation_at else 'Never'}",
+        ]
+        
+        if workspace.project_start and workspace.project_finish:
+            lines.append(f"  - Project Dates: {workspace.project_start} to {workspace.project_finish}")
+            lines.append(f"  - Critical Activities: {len(workspace.critical_path_ids)}")
+        
+        if workspace.code_types_with_values:
+            lines.append(f"  - Activity Code Types: {', '.join(workspace.code_types_with_values.keys())}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logfire.error("Error in get_workspace_status_tool", error=str(e))
+        return f"Error getting workspace status: {str(e)}"
+
+
+# ============================================================================
+# Workspace Modification Tools
+# ============================================================================
+
+@logfire.instrument("modify_activity_in_workspace_tool")
+async def modify_activity_in_workspace_tool(
+    ctx: RunContext[AgentDeps],
+    conversation_id: str,
+    task_id: int,
+    original_duration: int | None = None,
+    target_start_date: str | None = None,
+    target_end_date: str | None = None,
+    task_name: str | None = None
+) -> str:
+    """Modify an activity in the schedule workspace.
+    
+    Use this tool to change activity properties like duration, dates, or name
+    BEFORE running calculate_and_display_gantt to see the impact.
+    
+    Args:
+        ctx: Runtime context
+        conversation_id: Conversation identifier
+        task_id: Task ID of the activity to modify
+        original_duration: New original duration in hours (optional)
+        target_start_date: New target start date in ISO format (optional)
+        target_end_date: New target end date in ISO format (optional)
+        task_name: New activity name (optional)
+    
+    Returns:
+        Confirmation of changes made
+    """
+    try:
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_to_workspace_tool first."
+        
+        # Find the activity
+        mask = workspace.activities_df['task_id'] == task_id
+        if not mask.any():
+            return f"Activity with task_id {task_id} not found in workspace."
+        
+        changes = []
+        
+        # Apply changes
+        if original_duration is not None:
+            old_val = workspace.activities_df.loc[mask, 'target_drtn_hr_cnt'].values[0]
+            workspace.activities_df.loc[mask, 'target_drtn_hr_cnt'] = original_duration
+            changes.append(f"Duration: {old_val}h -> {original_duration}h")
+        
+        if target_start_date is not None:
+            from datetime import datetime
+            old_val = workspace.activities_df.loc[mask, 'target_start_date'].values[0]
+            new_date = datetime.fromisoformat(target_start_date)
+            workspace.activities_df.loc[mask, 'target_start_date'] = new_date
+            changes.append(f"Target Start: {old_val} -> {new_date}")
+        
+        if target_end_date is not None:
+            from datetime import datetime
+            old_val = workspace.activities_df.loc[mask, 'target_end_date'].values[0]
+            new_date = datetime.fromisoformat(target_end_date)
+            workspace.activities_df.loc[mask, 'target_end_date'] = new_date
+            changes.append(f"Target End: {old_val} -> {new_date}")
+        
+        if task_name is not None:
+            old_val = workspace.activities_df.loc[mask, 'task_name'].values[0]
+            workspace.activities_df.loc[mask, 'task_name'] = task_name
+            changes.append(f"Name: '{old_val}' -> '{task_name}'")
+        
+        if not changes:
+            return "No changes specified."
+        
+        workspace.is_modified = True
+        
+        task_code = workspace.activities_df.loc[mask, 'task_code'].values[0]
+        return f"Modified activity {task_code} (ID: {task_id}):\n" + "\n".join(f"  - {c}" for c in changes) + "\n\nUse calculate_and_display_gantt to see the schedule impact."
+        
+    except Exception as e:
+        logfire.error("Error in modify_activity_in_workspace_tool", error=str(e))
+        return f"Error modifying activity: {str(e)}"
+
+
+@logfire.instrument("add_activity_to_workspace_tool")
+async def add_activity_to_workspace_tool(
+    ctx: RunContext[AgentDeps],
+    conversation_id: str,
+    task_code: str,
+    task_name: str,
+    original_duration_hours: int,
+    wbs_id: int | None = None,
+    target_start_date: str | None = None
+) -> str:
+    """Add a new activity to the schedule workspace.
+    
+    Use this tool to add activities that will be included in the next
+    schedule calculation. The activity is added to the in-memory workspace
+    and NOT saved to the database until explicitly requested.
+    
+    Args:
+        ctx: Runtime context
+        conversation_id: Conversation identifier
+        task_code: Unique activity code for the new activity
+        task_name: Name of the new activity
+        original_duration_hours: Duration in hours (e.g., 40 for 5 days)
+        wbs_id: WBS ID to assign the activity to (optional)
+        target_start_date: Target start date in ISO format (optional)
+    
+    Returns:
+        Confirmation with the new task_id assigned
+    """
+    try:
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_to_workspace_tool first."
+        
+        # Check if task_code already exists
+        if task_code in workspace.activities_df['task_code'].values:
+            return f"Activity code '{task_code}' already exists in workspace."
+        
+        # Generate a new task_id (negative to indicate it's new and not in DB)
+        existing_ids = workspace.activities_df['task_id'].values
+        min_id = min(existing_ids) if len(existing_ids) > 0 else 0
+        new_task_id = min_id - 1 if min_id >= 0 else min_id - 1
+        
+        # Parse target start date if provided
+        target_start = None
+        if target_start_date:
+            from datetime import datetime
+            target_start = datetime.fromisoformat(target_start_date)
+        
+        # Create new activity row
+        new_row = {
+            'task_id': new_task_id,
+            'task_code': task_code,
+            'task_name': task_name,
+            'target_drtn_hr_cnt': original_duration_hours,
+            'remain_drtn_hr_cnt': original_duration_hours,
+            'target_start_date': target_start,
+            'target_end_date': None,
+            'wbs_id': wbs_id,
+            'wbs_path': None,  # Will be resolved if wbs_id provided
+            'status_code': 'TK_NotStart',
+            'total_float_hr_cnt': None,
+            'free_float_hr_cnt': None,
+        }
+        
+        # Add to DataFrame
+        workspace.activities_df = pd.concat([
+            workspace.activities_df,
+            pd.DataFrame([new_row])
+        ], ignore_index=True)
+        
+        workspace.is_modified = True
+        
+        return f"Added new activity:\n  - Task ID: {new_task_id} (temporary, will be assigned by DB on save)\n  - Code: {task_code}\n  - Name: {task_name}\n  - Duration: {original_duration_hours}h ({original_duration_hours/8:.1f} days)\n\nUse add_relationship_to_workspace to connect this activity to others."
+        
+    except Exception as e:
+        logfire.error("Error in add_activity_to_workspace_tool", error=str(e))
+        return f"Error adding activity: {str(e)}"
+
+
+@logfire.instrument("add_relationship_to_workspace_tool")
+async def add_relationship_to_workspace_tool(
+    ctx: RunContext[AgentDeps],
+    conversation_id: str,
+    predecessor_task_id: int,
+    successor_task_id: int,
+    relationship_type: str = "FS",
+    lag_hours: int = 0
+) -> str:
+    """Add a relationship between activities in the workspace.
+    
+    Use this tool to create dependencies between activities.
+    The relationship will be used in the next schedule calculation.
+    
+    Args:
+        ctx: Runtime context
+        conversation_id: Conversation identifier
+        predecessor_task_id: Task ID of the predecessor activity
+        successor_task_id: Task ID of the successor activity
+        relationship_type: FS (Finish-to-Start), SS, FF, or SF
+        lag_hours: Lag time in hours (positive = delay, negative = lead)
+    
+    Returns:
+        Confirmation of the relationship added
+    """
+    try:
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_to_workspace_tool first."
+        
+        # Validate activities exist
+        pred_exists = predecessor_task_id in workspace.activities_df['task_id'].values
+        succ_exists = successor_task_id in workspace.activities_df['task_id'].values
+        
+        if not pred_exists:
+            return f"Predecessor task_id {predecessor_task_id} not found in workspace."
+        if not succ_exists:
+            return f"Successor task_id {successor_task_id} not found in workspace."
+        
+        # Validate relationship type
+        valid_types = ['FS', 'SS', 'FF', 'SF']
+        if relationship_type.upper() not in valid_types:
+            return f"Invalid relationship type '{relationship_type}'. Use one of: {', '.join(valid_types)}"
+        
+        # Check for duplicate relationship
+        dup_mask = (
+            (workspace.relationships_df['pred_task_id'] == predecessor_task_id) &
+            (workspace.relationships_df['task_id'] == successor_task_id)
+        )
+        if dup_mask.any():
+            return f"Relationship from {predecessor_task_id} to {successor_task_id} already exists."
+        
+        # Map relationship type to P6 code
+        type_map = {'FS': 'PR_FS', 'SS': 'PR_SS', 'FF': 'PR_FF', 'SF': 'PR_SF'}
+        pred_type = type_map[relationship_type.upper()]
+        
+        # Create new relationship row
+        new_row = {
+            'task_pred_id': len(workspace.relationships_df) + 10000,  # Temp ID
+            'task_id': successor_task_id,
+            'pred_task_id': predecessor_task_id,
+            'pred_type': pred_type,
+            'lag_hr_cnt': lag_hours,
+        }
+        
+        # Add to DataFrame
+        workspace.relationships_df = pd.concat([
+            workspace.relationships_df,
+            pd.DataFrame([new_row])
+        ], ignore_index=True)
+        
+        workspace.is_modified = True
+        
+        # Get activity names for confirmation
+        pred_name = workspace.activities_df.loc[
+            workspace.activities_df['task_id'] == predecessor_task_id, 'task_name'
+        ].values[0]
+        succ_name = workspace.activities_df.loc[
+            workspace.activities_df['task_id'] == successor_task_id, 'task_name'
+        ].values[0]
+        
+        lag_str = f" + {lag_hours}h lag" if lag_hours > 0 else f" - {abs(lag_hours)}h lead" if lag_hours < 0 else ""
+        
+        return f"Added relationship:\n  '{pred_name}' --{relationship_type}{lag_str}--> '{succ_name}'\n\nUse calculate_and_display_gantt to see the schedule impact."
+        
+    except Exception as e:
+        logfire.error("Error in add_relationship_to_workspace_tool", error=str(e))
+        return f"Error adding relationship: {str(e)}"

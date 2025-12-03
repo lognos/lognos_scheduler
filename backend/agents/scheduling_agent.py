@@ -19,6 +19,14 @@ from backend.tools.p6_tools import (
     assign_activity_codes_tool,
     remove_activity_codes_tool,
     bulk_assign_activity_codes_tool,
+    # Gantt workspace tools
+    load_schedule_to_workspace_tool,
+    calculate_and_display_gantt_tool,
+    modify_activity_in_workspace_tool,
+    add_activity_to_workspace_tool,
+    add_relationship_to_workspace_tool,
+    hide_gantt_panel_tool,
+    get_workspace_status_tool,
     AgentDeps
 )
 from backend.models.io import AgentOutput
@@ -59,5 +67,13 @@ scheduling_agent = Agent(
         assign_activity_codes_tool,
         remove_activity_codes_tool,
         bulk_assign_activity_codes_tool,
+        # Gantt workspace tools
+        load_schedule_to_workspace_tool,
+        calculate_and_display_gantt_tool,
+        modify_activity_in_workspace_tool,
+        add_activity_to_workspace_tool,
+        add_relationship_to_workspace_tool,
+        hide_gantt_panel_tool,
+        get_workspace_status_tool,
     ],
 )

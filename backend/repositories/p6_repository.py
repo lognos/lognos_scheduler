@@ -1018,3 +1018,205 @@ class P6Repository:
             activities.append(activity)
         
         return activities
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Schedule Workspace Data Loading (for NetworkX/Gantt)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def load_schedule_activities_for_workspace(
+        self, 
+        conn: sqlite3.Connection, 
+        proj_id: int
+    ) -> list[dict]:
+        """
+        Load all activities for a project in a format suitable for schedule workspace.
+        
+        This is the ONE database query for activities - all filtering happens in DataFrame.
+        
+        Returns:
+            List of activity dicts with columns needed for CPM calculation
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            WITH RECURSIVE WBS_PATH_CTE(WBS_ID, PATH_NAME) AS (
+                SELECT WBS_ID, WBS_SHORT_NAME
+                FROM PROJWBS
+                WHERE PROJ_ID = ? AND PROJ_NODE_FLAG = 'Y'
+                UNION ALL
+                SELECT w.WBS_ID, wp.PATH_NAME || '.' || w.WBS_SHORT_NAME
+                FROM PROJWBS w
+                JOIN WBS_PATH_CTE wp ON w.PARENT_WBS_ID = wp.WBS_ID
+                WHERE w.PROJ_ID = ?
+            )
+            SELECT 
+                t.TASK_ID,
+                t.TASK_CODE,
+                t.TASK_NAME,
+                t.WBS_ID,
+                COALESCE(wp.PATH_NAME, '') as WBS_PATH,
+                t.STATUS_CODE,
+                COALESCE(t.TARGET_DRTN_HR_CNT, 0) as DURATION_HOURS,
+                COALESCE(t.REMAIN_DRTN_HR_CNT, 0) as REMAIN_DRTN_HOURS,
+                t.CLNDR_ID,
+                t.CSTR_TYPE,
+                t.CSTR_DATE,
+                t.CSTR_TYPE2,
+                t.CSTR_DATE2,
+                t.TARGET_START_DATE,
+                t.TARGET_END_DATE,
+                t.ACT_START_DATE,
+                t.ACT_END_DATE,
+                t.PHYS_COMPLETE_PCT
+            FROM TASK t
+            LEFT JOIN WBS_PATH_CTE wp ON t.WBS_ID = wp.WBS_ID
+            WHERE t.PROJ_ID = ? AND t.DELETE_SESSION_ID IS NULL
+            ORDER BY wp.PATH_NAME, t.TASK_CODE
+        """
+        cursor.execute(sql, (proj_id, proj_id, proj_id))
+        
+        columns = [
+            'task_id', 'task_code', 'task_name', 'wbs_id', 'wbs_path',
+            'status_code', 'duration_hours', 'remain_drtn_hours', 'clndr_id',
+            'constraint_type', 'constraint_date', 'constraint_type2', 'constraint_date2',
+            'target_start_date', 'target_end_date', 'act_start_date', 'act_end_date',
+            'phys_complete_pct'
+        ]
+        
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def load_schedule_relationships_for_workspace(
+        self, 
+        conn: sqlite3.Connection, 
+        proj_id: int
+    ) -> list[dict]:
+        """
+        Load all relationships for a project in a format suitable for schedule workspace.
+        
+        This is the ONE database query for relationships - all filtering happens in DataFrame.
+        
+        Returns:
+            List of relationship dicts with columns needed for CPM calculation
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT 
+                tp.TASK_PRED_ID,
+                tp.TASK_ID,
+                tp.PRED_TASK_ID,
+                tp.PRED_TYPE,
+                COALESCE(tp.LAG_HR_CNT, 0) as LAG_HR_CNT
+            FROM TASKPRED tp
+            WHERE tp.PROJ_ID = ?
+            ORDER BY tp.TASK_ID, tp.PRED_TASK_ID
+        """
+        cursor.execute(sql, (proj_id,))
+        
+        columns = ['task_pred_id', 'task_id', 'pred_task_id', 'pred_type', 'lag_hr_cnt']
+        
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def load_activity_codes_for_workspace(
+        self, 
+        conn: sqlite3.Connection, 
+        proj_id: int
+    ) -> list[dict]:
+        """
+        Load all activity code assignments for a project.
+        
+        Returns:
+            List of dicts with task_id, code_type_name, code_value_name
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT 
+                ta.TASK_ID,
+                at.ACTV_CODE_TYPE as CODE_TYPE_NAME,
+                ac.ACTV_CODE_NAME as CODE_VALUE_NAME
+            FROM TASKACTV ta
+            JOIN ACTVTYPE at ON ta.ACTV_CODE_TYPE_ID = at.ACTV_CODE_TYPE_ID
+            JOIN ACTVCODE ac ON ta.ACTV_CODE_ID = ac.ACTV_CODE_ID
+            JOIN TASK t ON ta.TASK_ID = t.TASK_ID
+            WHERE t.PROJ_ID = ? AND t.DELETE_SESSION_ID IS NULL
+            ORDER BY ta.TASK_ID, at.SEQ_NUM
+        """
+        cursor.execute(sql, (proj_id,))
+        
+        columns = ['task_id', 'code_type_name', 'code_value_name']
+        
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def load_available_activity_codes_for_workspace(
+        self, 
+        conn: sqlite3.Connection, 
+        proj_id: int
+    ) -> dict[str, list[str]]:
+        """
+        Load available activity code types and values for filter UI.
+        
+        Returns:
+            Dict of code_type_name -> list of code_value_names
+        """
+        cursor = conn.cursor()
+        
+        # Get both global codes and project-specific codes
+        sql = """
+            SELECT 
+                at.ACTV_CODE_TYPE as CODE_TYPE_NAME,
+                ac.ACTV_CODE_NAME as CODE_VALUE_NAME
+            FROM ACTVTYPE at
+            JOIN ACTVCODE ac ON at.ACTV_CODE_TYPE_ID = ac.ACTV_CODE_TYPE_ID
+            WHERE at.ACTV_CODE_TYPE_SCOPE = 'AS_Global' 
+               OR (at.ACTV_CODE_TYPE_SCOPE = 'AS_Project' AND at.PROJ_ID = ?)
+            ORDER BY at.SEQ_NUM, ac.SEQ_NUM
+        """
+        cursor.execute(sql, (proj_id,))
+        
+        result: dict[str, list[str]] = {}
+        for row in cursor.fetchall():
+            code_type = row[0]
+            code_value = row[1]
+            if code_type not in result:
+                result[code_type] = []
+            result[code_type].append(code_value)
+        
+        return result
+
+    def get_project_info(
+        self, 
+        conn: sqlite3.Connection, 
+        proj_id: int
+    ) -> dict | None:
+        """
+        Get basic project information.
+        
+        Returns:
+            Dict with project info or None if not found
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT 
+                p.PROJ_ID,
+                p.PROJ_SHORT_NAME,
+                pw.WBS_NAME as PROJECT_NAME,
+                p.PLAN_START_DATE,
+                p.PLAN_END_DATE
+            FROM PROJECT p
+            LEFT JOIN PROJWBS pw ON p.PROJ_ID = pw.PROJ_ID AND pw.PROJ_NODE_FLAG = 'Y'
+            WHERE p.PROJ_ID = ? AND p.DELETE_SESSION_ID IS NULL
+        """
+        cursor.execute(sql, (proj_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            return {
+                'proj_id': row[0],
+                'proj_short_name': row[1],
+                'project_name': row[2],
+                'plan_start_date': row[3],
+                'plan_end_date': row[4]
+            }
+        return None

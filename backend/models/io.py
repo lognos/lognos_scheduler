@@ -299,3 +299,133 @@ class ListActivitiesRequest(BaseModel):
         default=100,
         description="Maximum number of activities to return. Default 100."
     )
+
+
+# ============================================================================
+# Gantt Workspace Models
+# ============================================================================
+
+class LoadScheduleToWorkspaceRequest(BaseModel):
+    """Request to load a P6 schedule into the DataFrame workspace for visualization and calculations."""
+    model_config = ConfigDict(strict=True)
+    
+    conversation_id: StrictStr = Field(
+        ...,
+        description="Conversation ID for the workspace"
+    )
+    proj_id: int = Field(
+        ..., 
+        description="Project ID to load schedule from"
+    )
+
+
+class CalculateAndDisplayGanttRequest(BaseModel):
+    """Request to run CPM calculations and display Gantt chart."""
+    model_config = ConfigDict(strict=True)
+    
+    conversation_id: StrictStr = Field(
+        ...,
+        description="Conversation ID for the workspace"
+    )
+    filter_activity_codes: dict[str, list[str]] | None = Field(
+        default=None,
+        description="Filter by activity codes. Dict of {activity_code_type_name: [code_values]}. E.g., {'Phase': ['Phase 1'], 'Discipline': ['Civil', 'Electrical']}"
+    )
+    filter_wbs: StrictStr | None = Field(
+        default=None,
+        description="Filter by WBS path"
+    )
+    filter_critical_only: bool = Field(
+        default=False,
+        description="Show only critical path activities"
+    )
+    filter_status: list[str] | None = Field(
+        default=None,
+        description="Filter by status list"
+    )
+    filter_search: StrictStr | None = Field(
+        default=None,
+        description="Search in task code/name"
+    )
+    filter_date_start: StrictStr | None = Field(
+        default=None,
+        description="Filter activities starting after this date (ISO format)"
+    )
+    filter_date_end: StrictStr | None = Field(
+        default=None,
+        description="Filter activities ending before this date (ISO format)"
+    )
+
+
+class ModifyActivityInWorkspaceRequest(BaseModel):
+    """Request to modify an activity in the workspace DataFrame."""
+    model_config = ConfigDict(strict=True)
+    
+    task_id: int = Field(
+        ..., 
+        description="Task ID of the activity to modify"
+    )
+    original_duration: int | None = Field(
+        default=None,
+        description="New original duration in hours"
+    )
+    target_start_date: str | None = Field(
+        default=None,
+        description="New target start date in ISO format (YYYY-MM-DD)"
+    )
+    target_end_date: str | None = Field(
+        default=None,
+        description="New target end date in ISO format (YYYY-MM-DD)"
+    )
+    task_name: str | None = Field(
+        default=None,
+        description="New activity name"
+    )
+
+
+class AddActivityToWorkspaceRequest(BaseModel):
+    """Request to add a new activity to the workspace DataFrame."""
+    model_config = ConfigDict(strict=True)
+    
+    task_code: StrictStr = Field(
+        ..., 
+        description="Unique activity code for the new activity"
+    )
+    task_name: StrictStr = Field(
+        ..., 
+        description="Name of the new activity"
+    )
+    original_duration_hours: int = Field(
+        ..., 
+        description="Duration in hours (e.g., 40 for 5 days)"
+    )
+    wbs_id: int | None = Field(
+        default=None,
+        description="WBS ID to assign the activity to"
+    )
+    target_start_date: str | None = Field(
+        default=None,
+        description="Target start date in ISO format (YYYY-MM-DD)"
+    )
+
+
+class AddRelationshipToWorkspaceRequest(BaseModel):
+    """Request to add a relationship between activities in the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    predecessor_task_id: int = Field(
+        ..., 
+        description="Task ID of the predecessor activity"
+    )
+    successor_task_id: int = Field(
+        ..., 
+        description="Task ID of the successor activity"
+    )
+    relationship_type: str = Field(
+        default="FS",
+        description="Relationship type: FS (Finish-to-Start), SS (Start-to-Start), FF (Finish-to-Finish), SF (Start-to-Finish)"
+    )
+    lag_hours: int = Field(
+        default=0,
+        description="Lag time in hours (positive = delay, negative = lead)"
+    )

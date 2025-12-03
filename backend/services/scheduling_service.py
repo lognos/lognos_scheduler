@@ -746,3 +746,51 @@ class SchedulingService:
             'total_tasks': len(tasks),
             'task_results': task_results
         }
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Schedule Workspace Loading (for NetworkX/Gantt)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def load_schedule_for_workspace(self, proj_id: int, conn=None) -> dict:
+        """
+        Load complete schedule data for workspace (activities, relationships, codes).
+        
+        This is the ONE database operation for loading - all filtering happens in DataFrame.
+        
+        Args:
+            proj_id: Project ID to load
+            conn: Optional database connection
+            
+        Returns:
+            Dict with:
+            - project_info: Basic project information
+            - activities: List of activity dicts
+            - relationships: List of relationship dicts  
+            - activity_codes: List of code assignment dicts
+            - available_codes: Dict of code_type -> list of values
+        """
+        if conn:
+            return self._load_schedule_for_workspace_impl(conn, proj_id)
+        with get_db_connection() as direct_conn:
+            return self._load_schedule_for_workspace_impl(direct_conn, proj_id)
+    
+    def _load_schedule_for_workspace_impl(self, conn, proj_id: int) -> dict:
+        """Implementation of schedule loading."""
+        # Get project info
+        project_info = self.repo.get_project_info(conn, proj_id)
+        if not project_info:
+            raise ValueError(f"Project {proj_id} not found")
+        
+        # Load all data in single queries (ONE db operation per type)
+        activities = self.repo.load_schedule_activities_for_workspace(conn, proj_id)
+        relationships = self.repo.load_schedule_relationships_for_workspace(conn, proj_id)
+        activity_codes = self.repo.load_activity_codes_for_workspace(conn, proj_id)
+        available_codes = self.repo.load_available_activity_codes_for_workspace(conn, proj_id)
+        
+        return {
+            'project_info': project_info,
+            'activities': activities,
+            'relationships': relationships,
+            'activity_codes': activity_codes,
+            'available_codes': available_codes
+        }

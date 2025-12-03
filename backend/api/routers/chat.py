@@ -180,11 +180,15 @@ async def chat_stream(
             service = SchedulingService()
             vector_service = VectorService()
             
+            # Queue for gantt panel events from tools
+            gantt_event_queue: list[dict] = []
+            
             with SafeP6Transaction() as conn:
                 deps = AgentDeps(
                     service=service,
                     vector_service=vector_service,
-                    conn=conn
+                    conn=conn,
+                    gantt_event_queue=gantt_event_queue
                 )
                 
                 with logfire.span(
@@ -264,6 +268,10 @@ async def chat_stream(
                             conversation_id=conversation_id,
                             messages_saved=len(all_messages),
                         )
+                    
+                    # Stream any gantt panel events that were queued during tool execution
+                    for gantt_event in gantt_event_queue:
+                        yield sse_event(gantt_event)
             
             # Save assistant response to display history (always save, even if empty)
             if final_text:

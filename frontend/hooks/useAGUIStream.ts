@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useUser } from '@/lib/contexts/UserContext';
 import { useProject } from '@/lib/contexts/ProjectContext';
+import { GanttChartData, GanttPanelState } from '@/types/schedule';
 
 export type Message = {
     id: string;
@@ -31,7 +32,8 @@ type SSEReasoningEvent = { type: 'reasoning'; node: string; content: string };
 type SSENodeEvent = { node: string; status: string; intent?: string };
 type SSEEndEvent = { node: 'End'; output: string };
 type SSEErrorEvent = { node: 'Error'; status: 'error'; error: string };
-type SSEEvent = SSETokenEvent | SSEReasoningEvent | SSENodeEvent | SSEEndEvent | SSEErrorEvent;
+type SSEGanttPanelEvent = { type: 'gantt_panel'; action: 'show' | 'hide'; data?: GanttChartData };
+type SSEEvent = SSETokenEvent | SSEReasoningEvent | SSENodeEvent | SSEEndEvent | SSEErrorEvent | SSEGanttPanelEvent;
 
 function isTokenEvent(data: SSEEvent): data is SSETokenEvent {
     return 'type' in data && data.type === 'token';
@@ -49,6 +51,10 @@ function isErrorEvent(data: SSEEvent): data is SSEErrorEvent {
     return 'node' in data && data.node === 'Error';
 }
 
+function isGanttPanelEvent(data: SSEEvent): data is SSEGanttPanelEvent {
+    return 'type' in data && data.type === 'gantt_panel';
+}
+
 export function useAGUIStream() {
     const { user } = useUser();
     const { currentProject } = useProject();
@@ -58,6 +64,11 @@ export function useAGUIStream() {
     const conversationIdRef = useRef<string>('');
     const abortControllerRef = useRef<AbortController | null>(null);
     const [conversationMetadata, setConversationMetadata] = useState<ConversationMetadata | null>(null);
+    const [ganttPanel, setGanttPanel] = useState<GanttPanelState>({
+        isVisible: false,
+        data: null,
+        isLoading: false,
+    });
 
     useEffect(() => {
         // Initialize conversation ID on client side only
@@ -178,6 +189,21 @@ export function useAGUIStream() {
                                             : msg
                                     )
                                 );
+                            } else if (isGanttPanelEvent(data)) {
+                                // Gantt panel show/hide event
+                                if (data.action === 'show' && data.data) {
+                                    setGanttPanel({
+                                        isVisible: true,
+                                        data: data.data,
+                                        isLoading: false,
+                                    });
+                                } else if (data.action === 'hide') {
+                                    setGanttPanel({
+                                        isVisible: false,
+                                        data: null,
+                                        isLoading: false,
+                                    });
+                                }
                             } else {
                                 // Node status update
                                 setAgentState((prev) => ({
@@ -216,6 +242,7 @@ export function useAGUIStream() {
         setMessages([]);
         setAgentState(null);
         setIsLoading(false);
+        setGanttPanel({ isVisible: false, data: null, isLoading: false });
 
         const newId = crypto.randomUUID();
         conversationIdRef.current = newId;
@@ -236,6 +263,10 @@ export function useAGUIStream() {
         });
     }, []);
 
+    const hideGanttPanel = useCallback(() => {
+        setGanttPanel({ isVisible: false, data: null, isLoading: false });
+    }, []);
+
     return {
         messages,
         sendMessage,
@@ -245,5 +276,8 @@ export function useAGUIStream() {
         loadConversation,
         conversationMetadata,
         isDirty: conversationMetadata?.isSaved === false,
+        // Gantt panel state and handlers
+        ganttPanel,
+        hideGanttPanel,
     };
 }

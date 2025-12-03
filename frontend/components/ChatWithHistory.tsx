@@ -28,6 +28,8 @@ export function ChatWithHistory() {
         resetConversation,
         loadConversation,
         conversationMetadata,
+        ganttPanel,
+        hideGanttPanel,
     } = useAGUIStream();
 
     // Debounce panel toggle to prevent rapid fetches
@@ -96,6 +98,8 @@ export function ChatWithHistory() {
                 onSendMessage={sendMessage}
                 onNewConversation={resetConversation}
                 onHistoryToggle={handleHistoryToggle}
+                ganttPanel={ganttPanel}
+                onHideGanttPanel={hideGanttPanel}
             />
 
             {showHistory && (

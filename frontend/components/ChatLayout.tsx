@@ -7,7 +7,9 @@ import { InputArea } from './InputArea';
 import { Sidebar } from './Sidebar';
 import { ChatHeader } from './ChatHeader';
 import { ReviewBadge, ReviewItem } from './ReviewBadge';
+import { GanttPanel } from './GanttPanel';
 import { useUser } from '@/lib/contexts/UserContext';
+import { GanttPanelState } from '@/types/schedule';
 
 // Mock data for review items - TODO: Replace with usePendingActions hook
 const mockReviewItems: ReviewItem[] = [
@@ -22,6 +24,8 @@ interface ChatLayoutProps {
     onSendMessage: (content: string) => void;
     onNewConversation: () => void;
     onHistoryToggle: () => void;
+    ganttPanel?: GanttPanelState;
+    onHideGanttPanel?: () => void;
 }
 
 
@@ -32,9 +36,14 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
     onSendMessage,
     onNewConversation,
     onHistoryToggle,
+    ganttPanel,
+    onHideGanttPanel,
 }) => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const { user, t } = useUser();
+    
+    // Determine if Gantt panel is visible
+    const isGanttVisible = ganttPanel?.isVisible && ganttPanel?.data;
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -48,7 +57,8 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
         <div className="relative flex h-screen bg-[#0d1117] text-white/90 font-light overflow-hidden">
             <Sidebar />
 
-            <div className="flex-1 flex flex-col pl-16 transition-all duration-300 relative">
+            {/* Main content area - shrinks when Gantt panel is open */}
+            <div className={`flex-1 flex flex-col pl-16 transition-all duration-300 relative ${isGanttVisible ? 'mr-[940px]' : ''}`}>
                 {/* Header Actions */}
                 {/* Header Actions */}
                 <ChatHeader
@@ -104,6 +114,11 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
                     </footer>
                 )}
             </div>
+
+            {/* Gantt Panel - Floating side panel */}
+            {isGanttVisible && ganttPanel?.data && onHideGanttPanel && (
+                <GanttPanel data={ganttPanel.data} onClose={onHideGanttPanel} />
+            )}
         </div>
     );
 };
