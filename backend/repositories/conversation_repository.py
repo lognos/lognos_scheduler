@@ -277,3 +277,61 @@ class ConversationRepository:
             .execute()
         )
         return len(result.data) > 0 if result.data else False
+
+    @logfire.instrument("repo.save_agent_message_history")
+    async def save_agent_message_history(
+        self,
+        conversation_id: str,
+        messages_json: str,
+    ) -> bool:
+        """Save serialized Pydantic AI message history as JSON.
+        
+        Stores the ModelMessagesTypeAdapter-serialized messages for use
+        in subsequent agent runs with the message_history parameter.
+        
+        Args:
+            conversation_id: The conversation ID.
+            messages_json: JSON string from ModelMessagesTypeAdapter.dump_json().
+        
+        Returns:
+            True if saved successfully.
+        """
+        result = (
+            self.supabase
+            .schema(self.SCHEMA)
+            .table(self.CONVERSATIONS_TABLE)
+            .update({"agent_message_history": messages_json})
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        return len(result.data) > 0 if result.data else False
+    
+    @logfire.instrument("repo.get_agent_message_history")
+    async def get_agent_message_history(
+        self,
+        conversation_id: str,
+    ) -> str | None:
+        """Get serialized Pydantic AI message history JSON.
+        
+        Retrieves the ModelMessagesTypeAdapter-serialized messages for use
+        in agent runs with the message_history parameter.
+        
+        Args:
+            conversation_id: The conversation ID.
+        
+        Returns:
+            JSON string that can be parsed with ModelMessagesTypeAdapter.validate_json(),
+            or None if no history exists.
+        """
+        result = (
+            self.supabase
+            .schema(self.SCHEMA)
+            .table(self.CONVERSATIONS_TABLE)
+            .select("agent_message_history")
+            .eq("conversation_id", conversation_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data and result.data[0].get("agent_message_history"):
+            return result.data[0]["agent_message_history"]
+        return None

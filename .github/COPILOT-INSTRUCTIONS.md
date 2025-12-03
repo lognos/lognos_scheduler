@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Guide GitHub Copilot to generate backend-only services that expose:
+Guide GitHub Copilot when generating backend services that expose:
 
 * **Typed FastAPI endpoints**
 * **Pydantic AI agents** processing structured/unstructured content
@@ -12,8 +12,6 @@ Guide GitHub Copilot to generate backend-only services that expose:
 * **External MCP tools** for interoperability
 * **A2A protocol** for Lognos internal agent-to-agent communication
 
-**No UI code must be generated in this repository**
-(no React, Vite, AG-UI, templates, or client browser flows).
 
 No icons or emojis are allowed in the codebase.
 
@@ -35,8 +33,6 @@ Valid output includes:
 
 Prohibited:
 
-* Any UI code or frontend artifacts
-* AG-UI protocol usage (only applicable in FE)
 * Direct database access from routers or agents
 * Silent logging or handling of errors
 * Runtime type coercion (strict input/output validation required)

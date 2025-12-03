@@ -72,7 +72,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
                                 <div className="w-full max-w-3xl">
                                     <InputArea onSend={onSendMessage} disabled={isLoading} />
                                 </div>
-                                <p className="text-1.5xl text-gray-300 font-light">
+                                {/* <p className="text-1.5xl text-gray-300 font-light">
                                     You have for review{' '}
                                     {mockReviewItems.map((item, index) => (
                                         <span key={item.id}>
@@ -83,7 +83,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
                                             {index < mockReviewItems.length - 1 && ' and '}
                                         </span>
                                     ))}
-                                </p>
+                                </p> */}
                             </div>
                         ) : (
                             <>

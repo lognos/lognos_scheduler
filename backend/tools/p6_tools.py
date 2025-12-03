@@ -1,4 +1,7 @@
-from pydantic_ai import RunContext
+from dataclasses import dataclass
+from typing import Optional
+
+from pydantic_ai import RunContext, ModelRetry
 import logfire
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
@@ -21,76 +24,103 @@ from backend.models.io import (
     GetActivityCurrentCodesRequest,
 )
 
-# We define the dependencies class
+
+@dataclass
 class AgentDeps:
-    def __init__(self, service: SchedulingService, vector_service: VectorService = None, conn=None):
-        self.service = service
-        self.vector_service = vector_service
-        self.conn = conn
+    """Dependencies for the scheduling agent.
+    
+    Attributes:
+        service: The scheduling service for P6 operations.
+        vector_service: Optional vector search service for semantic search.
+        conn: Optional database connection for direct queries.
+    """
+    service: SchedulingService
+    vector_service: Optional[VectorService] = None
+    conn: Optional[object] = None
 
 @logfire.instrument("delete_relationship_tool")
 async def delete_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipDeleteRequest) -> str:
-    """
-    Deletes an existing relationship between two activities.
+    """Delete an existing relationship between two P6 activities.
+    
+    Use this tool when the user wants to remove a dependency link between activities.
+    The relationship is identified by the predecessor and successor task codes.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request containing pred_task_code, succ_task_code, and proj_id.
+    
+    Returns:
+        Success message confirming the relationship was deleted.
+    
+    Raises:
+        ModelRetry: If relationship not found (may need to search for correct task codes).
     """
     try:
         return ctx.deps.service.delete_relationship(req, conn=ctx.deps.conn)
+    except ValueError as e:
+        # Relationship not found - agent should search for correct task codes
+        raise ModelRetry(f"Relationship not found: {e}. Use search_activity_tool to find correct task codes.")
     except Exception as e:
         logfire.error("Error in delete_relationship_tool", error=str(e))
         return f"Error deleting relationship: {str(e)}"
 
 @logfire.instrument("update_relationship_tool")
 async def update_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipUpdateRequest) -> str:
-    """
-    Updates an existing relationship (Lag or Type).
+    """Update an existing relationship's lag or type.
+    
+    Use this tool to modify the lag duration or relationship type (FS, SS, FF, SF)
+    between two linked activities.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request containing task codes, proj_id, and optional new_lag or new_type.
+    
+    Returns:
+        Success message with updated relationship details.
+    
+    Raises:
+        ModelRetry: If relationship not found (may need to verify task codes).
     """
     try:
         return ctx.deps.service.update_relationship(req, conn=ctx.deps.conn)
+    except ValueError as e:
+        # Relationship not found
+        raise ModelRetry(f"Relationship not found: {e}. Verify task codes using search_activity_tool.")
     except Exception as e:
         logfire.error("Error in update_relationship_tool", error=str(e))
         return f"Error updating relationship: {str(e)}"
 
 @logfire.instrument("search_activity_tool")
 async def search_activity_tool(ctx: RunContext[AgentDeps], req: SearchActivityRequest) -> str:
-    """
-    Searches for activities using natural language description.
-    Returns a list of matching activities with their IDs and similarity scores.
+    """Search for activities using natural language description.
+    
+    Use this tool when the user refers to an activity by description rather than
+    task code. Returns matching activities with their codes and similarity scores.
+    
+    If no results found, suggest using index_project_tool first to index the project.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, vector_service, connection).
+        req: Request containing query text and proj_id for filtering.
+    
+    Returns:
+        Formatted list of matching activities with task codes, names, and scores.
+        Returns suggestion to index if no matches found.
+    
+    Raises:
+        ModelRetry: If vector service unavailable (system configuration issue).
     """
     if not ctx.deps.vector_service:
-        return "Vector search service is not available."
+        raise ModelRetry("Vector search service is not available. Please try using the task code directly.")
     
     try:
         results = ctx.deps.vector_service.search_activities(req.query, req.proj_id, threshold=0.5, conn=ctx.deps.conn)
         if not results:
-            return "No matching activities found."
+            return f"No matching activities found for '{req.query}'. Try using index_project_tool to index project {req.proj_id} first, then search again."
         
         # Format results for the agent
         response = "Found matching activities:\n"
         for task_id, score in results:
-            # We need to fetch details to show the user (Code, Name)
-            # The vector service returns task_id.
-            # We can use the repo to get details.
-            # Since we are in the tool, we can access the repo via service.
-            details = ctx.deps.service.repo.get_activity_details(ctx.deps.conn, task_id)
-            # Wait, get_activity_details takes task_id but returns dict with status etc.
-            # We need Code and Name.
-            # Let's add a method to repo or just query here?
-            # Better to add a method to repo or use existing one if it returns what we need.
-            # get_activity_details returns status, pct, dates. Not Code/Name.
-            # But we have task_id.
-            # Let's fetch Code and Name directly or add a helper.
-            # For now, I'll just show the ID if I can't easily get the name without modifying repo again.
-            # Actually, I should modify repo to get basic info by ID.
-            # Or I can use `get_task_text_data` logic but for single ID.
-            
-            # Let's do a quick query here using the connection, or better, add a helper in service/repo.
-            # I'll add a helper in SchedulingService to get activity info by ID.
-            # But I can't modify service in this tool call easily.
-            # I'll use a direct SQL query here for now as a pragmatic solution, 
-            # or better, rely on the fact that the agent can look up details if needed.
-            # But the user wants to know WHICH activity it is.
-            
-            # Let's use the connection to get the code and name.
             cursor = ctx.deps.conn.cursor()
             cursor.execute("SELECT TASK_CODE, TASK_NAME FROM TASK WHERE TASK_ID = ?", (task_id,))
             row = cursor.fetchone()
@@ -106,70 +136,154 @@ async def search_activity_tool(ctx: RunContext[AgentDeps], req: SearchActivityRe
 
 @logfire.instrument("index_project_tool")
 async def index_project_tool(ctx: RunContext[AgentDeps], req: IndexProjectRequest) -> str:
-    """
-    Indexes a project for vector search. Generates embeddings for all activities.
+    """Index a P6 project for vector-based activity search.
+    
+    Use this tool to enable natural language search on a project's activities.
+    Generates embeddings for all activities in the project. Should be called
+    before search_activity_tool if searches return no results.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, vector_service, connection).
+        req: Request containing the proj_id to index.
+    
+    Returns:
+        Success message confirming indexing is complete.
+    
+    Raises:
+        ModelRetry: If vector service unavailable (system configuration issue).
     """
     if not ctx.deps.vector_service:
-        return "Vector search service is not available."
+        raise ModelRetry("Vector search service is not available. Activity search by description is disabled.")
 
     try:
         ctx.deps.vector_service.index_project(req.proj_id, conn=ctx.deps.conn)
-        return f"Successfully indexed project {req.proj_id}."
+        return f"Successfully indexed project {req.proj_id}. You can now search for activities by description."
     except Exception as e:
         logfire.error("Error in index_project_tool", error=str(e))
         return f"Error indexing project: {str(e)}"
 
 @logfire.instrument("get_activity_details_tool")
 async def get_activity_details_tool(ctx: RunContext[AgentDeps], req: ActivityDetailsRequest) -> dict | str:
-    """
-    Retrieves current details (status, dates, % complete) for an activity.
-    Returns: status_code, phys_complete_pct, act_start_date, act_end_date, target_start_date (Planned Start), target_end_date (Planned Finish).
+    """Retrieve current details for a P6 activity.
+    
+    Use this tool to check an activity's status, dates, and progress before
+    making updates. Essential for validating status transitions and calculating
+    relative dates.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request containing task_code and proj_id.
+    
+    Returns:
+        Dictionary with status_code, phys_complete_pct, act_start_date, act_end_date,
+        target_start_date (Planned Start), target_end_date (Planned Finish).
+    
+    Raises:
+        ModelRetry: If activity not found (may need to search for correct task code).
     """
     try:
-        return ctx.deps.service.get_activity_details(req, conn=ctx.deps.conn)
+        result = ctx.deps.service.get_activity_details(req, conn=ctx.deps.conn)
+        if result is None:
+            raise ModelRetry(f"Activity '{req.task_code}' not found in project {req.proj_id}. Use search_activity_tool to find the correct task code.")
+        return result
+    except ModelRetry:
+        raise
     except Exception as e:
         logfire.error("Error in get_activity_details_tool", error=str(e))
         return f"Error retrieving details: {str(e)}"
 
 @logfire.instrument("update_activity_status_tool")
 async def update_activity_status_tool(ctx: RunContext[AgentDeps], req: ActivityStatusUpdateRequest) -> str:
-    """
-    Updates the status of an activity (Not Started, In Progress, Completed) with strict validation.
+    """Update the status of a P6 activity with P6 business rule validation.
+    
+    Use this tool to change an activity's status. Enforces P6 rules:
+    - 'In Progress' requires Actual Start date
+    - 'Completed' requires both Actual Start and Actual Finish dates
+    
+    Always use get_activity_details_tool first to check current status.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request containing task_code, proj_id, new_status, and optional dates.
+    
+    Returns:
+        Success message confirming the status update.
+    
+    Raises:
+        ModelRetry: If validation fails (e.g., missing required dates for status transition).
     """
     try:
         return ctx.deps.service.update_activity_status(req, conn=ctx.deps.conn)
+    except ValueError as e:
+        # P6 business rule violation - agent should provide required dates
+        raise ModelRetry(f"Status update failed: {e}. Please provide the required dates.")
     except Exception as e:
         logfire.error("Error in update_activity_status_tool", error=str(e))
         return f"Error updating status: {str(e)}"
 
 @logfire.instrument("create_activity_tool")
 async def create_activity_tool(ctx: RunContext[AgentDeps], req: ActivityCreateRequest) -> str:
-    """
-    Creates a new activity in the P6 schedule.
+    """Create a new activity in the P6 schedule.
+    
+    Use this tool to add a new task/activity to a project. Requires the WBS ID
+    where the activity should be placed.
+    
+    Important: Use 'task_code' for the Activity ID (e.g., 'A1000'), NOT 'task_id'.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with task_code, task_name, wbs_id, proj_id, and optional duration/calendar.
+    
+    Returns:
+        Success message with the created task code and internal task_id.
     """
     try:
         task_id = ctx.deps.service.create_activity(req, conn=ctx.deps.conn)
-        return f"Successfully created activity {req.task_code} with ID {task_id}."
+        return f"Successfully created activity '{req.task_code}' ({req.task_name}) with internal ID {task_id}."
     except Exception as e:
         logfire.error("Error in create_activity_tool", error=str(e))
         return f"Error creating activity: {str(e)}"
 
 @logfire.instrument("create_relationship_tool")
 async def create_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipCreateRequest) -> str:
-    """
-    Creates a relationship between two activities.
+    """Create a dependency relationship between two P6 activities.
+    
+    Use this tool to link activities with predecessor/successor relationships.
+    Supports all P6 relationship types: FS (Finish-to-Start), SS, FF, SF.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with pred_task_code, succ_task_code, proj_id, pred_type, and optional lag.
+    
+    Returns:
+        Success message confirming the relationship was created.
+    
+    Raises:
+        ModelRetry: If either activity not found (use search_activity_tool to find codes).
     """
     try:
-        rel_id = ctx.deps.service.create_relationship(req, conn=ctx.deps.conn)
-        return f"Successfully linked {req.pred_task_code} -> {req.succ_task_code} ({req.pred_type})."
+        ctx.deps.service.create_relationship(req, conn=ctx.deps.conn)
+        lag_info = f" with lag {req.lag}h" if req.lag else ""
+        return f"Successfully linked {req.pred_task_code} -> {req.succ_task_code} ({req.pred_type}){lag_info}."
+    except ValueError as e:
+        raise ModelRetry(f"Cannot create relationship: {e}. Use search_activity_tool to verify task codes.")
     except Exception as e:
         logfire.error("Error in create_relationship_tool", error=str(e))
         return f"Error creating relationship: {str(e)}"
 
 @logfire.instrument("update_progress_tool")
 async def update_progress_tool(ctx: RunContext[AgentDeps], req: ProgressUpdateRequest) -> str:
-    """
-    Updates the physical % complete of an activity.
+    """Update the physical percent complete of a P6 activity.
+    
+    Use this tool to record progress on an activity. If updating to 100%,
+    an actual finish date should also be provided.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with task_code, proj_id, phys_complete_pct (0-100), and optional dates.
+    
+    Returns:
+        Success message with the updated progress value.
     """
     try:
         result = ctx.deps.service.update_progress(req, conn=ctx.deps.conn)
@@ -180,21 +294,38 @@ async def update_progress_tool(ctx: RunContext[AgentDeps], req: ProgressUpdateRe
 
 @logfire.instrument("create_project_tool")
 async def create_project_tool(ctx: RunContext[AgentDeps], req: ProjectCreateRequest) -> str:
-    """
-    Creates a new project in the P6 database.
+    """Create a new project in the P6 database.
+    
+    Use this tool to set up a new project with its root WBS structure.
+    The project short name must be unique across the P6 database.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with project_short_name, project_name, and optional planned_start_date.
+    
+    Returns:
+        Success message with the new project ID and root WBS ID.
     """
     try:
         proj_id, wbs_id = ctx.deps.service.create_project(req, conn=ctx.deps.conn)
-        return f"Successfully created project '{req.project_short_name}' with ID {proj_id}. Root WBS ID is {wbs_id}."
+        return f"Successfully created project '{req.project_short_name}' ({req.project_name}) with ID {proj_id}. Root WBS ID: {wbs_id}."
     except Exception as e:
         logfire.error("Error in create_project_tool", error=str(e))
         return f"Error creating project: {str(e)}"
 
 @logfire.instrument("list_projects_tool")
 async def list_projects_tool(ctx: RunContext[AgentDeps], req: ListProjectsRequest) -> str:
-    """
-    Lists all projects in the P6 database with their key information.
-    Returns a formatted table of projects with ID, name, dates, activity count, and description.
+    """List all projects available in the P6 database.
+    
+    Use this tool to discover project IDs and see project information.
+    Returns a formatted table with project details including activity counts.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Empty request (no parameters needed).
+    
+    Returns:
+        Formatted table of projects with ID, name, dates, activity count, and description.
     """
     try:
         projects = ctx.deps.service.list_projects(req, conn=ctx.deps.conn)
@@ -246,12 +377,17 @@ async def list_projects_tool(ctx: RunContext[AgentDeps], req: ListProjectsReques
 
 @logfire.instrument("list_activity_codes_tool")
 async def list_activity_codes_tool(ctx: RunContext[AgentDeps], req: ListActivityCodesRequest) -> str:
-    """
-    Lists available activity code types and their values.
-    By default shows only global codes. Set include_project_codes=True and provide proj_id
-    to also include project-specific codes.
+    """List available activity code types and their values.
     
-    Returns a formatted list of code types with their available values for assignment.
+    Use this tool to discover what activity codes can be assigned to activities.
+    Shows both global codes and optionally project-specific codes.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with optional proj_id and include_project_codes flag.
+    
+    Returns:
+        Formatted list of code types (e.g., PHASE, DISCIPLINE) with available values.
     """
     try:
         code_types = ctx.deps.service.list_activity_codes(req, conn=ctx.deps.conn)
@@ -293,11 +429,17 @@ async def get_activity_current_codes_tool(
     ctx: RunContext[AgentDeps], 
     req: GetActivityCurrentCodesRequest
 ) -> str:
-    """
-    Gets current activity code assignments for one or more activities.
-    Use this before assigning codes to show what will be replaced.
+    """Get current activity code assignments for one or more activities.
     
-    Returns the current code assignments for each activity.
+    Use this tool BEFORE assigning codes to show the user what will be replaced.
+    Each activity can only have one code per code type.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with task_codes list and proj_id.
+    
+    Returns:
+        Formatted list of current code assignments per activity.
     """
     try:
         result = ctx.deps.service.get_activity_current_codes(req, conn=ctx.deps.conn)
@@ -324,13 +466,20 @@ async def assign_activity_codes_tool(
     ctx: RunContext[AgentDeps], 
     req: AssignActivityCodeRequest
 ) -> str:
-    """
-    Assigns one or more activity codes to a single activity.
-    Each activity can have one code per code type. Assigning a new code for a type
-    replaces the existing one (if replace_existing=True, which is default).
+    """Assign one or more activity codes to a single activity.
     
-    Before calling this, use get_activity_current_codes_tool to see what codes
-    are currently assigned and what will be replaced.
+    Use this tool to categorize an activity with codes like PHASE, DISCIPLINE, etc.
+    Each activity can have one code per code type - assigning a new code replaces
+    the existing one (when replace_existing=True, which is default).
+    
+    Always use get_activity_current_codes_tool first to show what will be replaced.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with task_code, proj_id, code_assignments, and optional replace_existing flag.
+    
+    Returns:
+        Summary of assigned and replaced codes, plus any errors.
     """
     try:
         result = ctx.deps.service.assign_activity_codes(req, conn=ctx.deps.conn)
@@ -368,9 +517,17 @@ async def remove_activity_codes_tool(
     ctx: RunContext[AgentDeps], 
     req: RemoveActivityCodeRequest
 ) -> str:
-    """
-    Removes activity code assignments from an activity.
-    Specify the code type names to remove (e.g., ['PHASE', 'DISCIPLINE']).
+    """Remove activity code assignments from an activity.
+    
+    Use this tool to unassign codes from an activity. Specify which code types
+    to remove (e.g., ['PHASE', 'DISCIPLINE']).
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with task_code, proj_id, and code_types list to remove.
+    
+    Returns:
+        Summary of removed codes and any code types that weren't assigned.
     """
     try:
         result = ctx.deps.service.remove_activity_codes(req, conn=ctx.deps.conn)
@@ -402,14 +559,20 @@ async def bulk_assign_activity_codes_tool(
     ctx: RunContext[AgentDeps], 
     req: BulkAssignActivityCodeRequest
 ) -> str:
-    """
-    Assigns activity codes to multiple activities at once.
+    """Assign activity codes to multiple activities at once.
     
-    Specify target activities either by:
-    - task_codes: List of specific activity codes
+    Use this tool for efficient bulk updates. Specify target activities by:
+    - task_codes: List of specific activity codes, OR
     - wbs_id: All activities under a WBS (including nested WBS)
     
     The same code assignments are applied to all specified activities.
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request with proj_id, code_assignments, and either task_codes or wbs_id.
+    
+    Returns:
+        Summary with counts of assigned/replaced codes and per-activity details.
     """
     try:
         result = ctx.deps.service.bulk_assign_activity_codes(req, conn=ctx.deps.conn)

@@ -2,6 +2,55 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator, StrictStr
 from typing import Literal, Optional, Union
 from datetime import datetime
 
+
+# ============================================================
+# Agent Structured Output Models
+# ============================================================
+
+class TaskAction(BaseModel):
+    """Represents an action taken on a P6 task."""
+    model_config = ConfigDict(strict=True)
+    
+    task_code: StrictStr = Field(..., description="Task code affected")
+    action: Literal["created", "updated", "deleted", "linked"] = Field(..., description="Action performed")
+    details: Optional[str] = Field(None, description="Additional details about the action")
+
+
+class ClarificationRequest(BaseModel):
+    """Agent needs more information from the user."""
+    model_config = ConfigDict(strict=True)
+    
+    question: StrictStr = Field(..., description="The clarifying question to ask")
+    options: Optional[list[str]] = Field(None, description="Possible options for the user")
+    context: Optional[str] = Field(None, description="Why this clarification is needed")
+
+
+class SchedulingResponse(BaseModel):
+    """Successful response with scheduling information."""
+    model_config = ConfigDict(strict=True)
+    
+    message: StrictStr = Field(..., description="Natural language summary for the user")
+    actions_taken: list[TaskAction] = Field(default_factory=list, description="List of actions performed")
+    affected_tasks: list[str] = Field(default_factory=list, description="Task codes that were affected")
+
+
+class ErrorResponse(BaseModel):
+    """Response when an error occurred that the agent cannot recover from."""
+    model_config = ConfigDict(strict=True)
+    
+    error_type: Literal["validation", "permission", "not_found", "system"] = Field(...)
+    message: StrictStr = Field(..., description="User-friendly error message")
+    suggestion: Optional[str] = Field(None, description="Suggested next steps")
+
+
+# Union type for all possible agent outputs
+AgentOutput = Union[SchedulingResponse, ClarificationRequest, ErrorResponse]
+
+
+# ============================================================
+# Tool Request Models
+# ============================================================
+
 class ActivityCreateRequest(BaseModel):
     model_config = ConfigDict(strict=True)
     

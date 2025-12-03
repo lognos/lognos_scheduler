@@ -1,4 +1,4 @@
-from pydantic_ai import Agent
+from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.settings import ModelSettings
 from backend.tools.p6_tools import (
     create_activity_tool, 
@@ -19,12 +19,21 @@ from backend.tools.p6_tools import (
     bulk_assign_activity_codes_tool,
     AgentDeps
 )
+from backend.models.io import AgentOutput
 from backend.config.settings import settings
 
-# Define the Agent
+# Usage limits to pass at runtime (prevents runaway loops)
+SCHEDULING_USAGE_LIMITS = UsageLimits(
+    request_limit=25,  # Maximum requests per run
+    input_tokens_limit=50_000,  # Input token limit
+    output_tokens_limit=8_000,  # Output token limit
+)
+
+# Define the Agent with structured output
 scheduling_agent = Agent(
     settings.GOOGLE_DEFAULT_MODEL,
     deps_type=AgentDeps,
+    output_type=AgentOutput,  # Structured output: SchedulingResponse | ClarificationRequest | ErrorResponse
     retries=5,  # Increased retries for Gemini empty response issues
     model_settings=ModelSettings(
         temperature=0.3,  # Lower temperature for more consistent responses
@@ -46,7 +55,7 @@ scheduling_agent = Agent(
         "When suggesting activity codes, consider the activity name and description to recommend appropriate codes. "
         "\n\n"
         "Always verify that the user provides necessary details (Project ID, WBS ID, Activity Codes). "
-        "If details are missing, ask the user for clarification. "
+        "If details are missing, respond with a ClarificationRequest including a clear question and possible options. "
         "When creating activities, use the 'task_code' parameter for the Activity ID (e.g., 'A1000'). Do NOT use 'task_id'. "
         "When creating relationships, ensure you understand the predecessor and successor. "
         "When updating activity status, ALWAYS check the current status first using 'get_activity_details_tool'. "
@@ -56,9 +65,11 @@ scheduling_agent = Agent(
         "Enforce P6 business rules: 'In Progress' requires Actual Start; 'Completed' requires Actual Start and Actual Finish. "
         "If the user specifies a relative date (e.g., 'a week later than planned'), use 'get_activity_details_tool' to find the 'target_start_date' (Planned Start) and calculate the new date. "
         "\n\n"
-        "IMPORTANT: After using tools, you MUST always summarize the results in a natural text response for the user. "
-        "Never end your turn with just tool results - always explain what happened in plain language. "
-        "Be concise and professional."
+        "RESPONSE FORMAT: "
+        "- For successful operations: Return a SchedulingResponse with a message summarizing what was done and list of actions_taken. "
+        "- For clarifications needed: Return a ClarificationRequest with a clear question and options. "
+        "- For errors: Return an ErrorResponse with error_type, message, and suggestion. "
+        "Always be concise and professional."
     ),
     tools=[
         create_activity_tool, 

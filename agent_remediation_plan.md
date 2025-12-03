@@ -4,13 +4,36 @@
 
 This document identifies issues with the current Pydantic AI implementation compared to official documentation best practices. The analysis covers agent setup, tool registration, streaming, message history, dependencies, and observability.
 
-**Current Status**: The implementation works but has several areas that deviate from best practices and lack production-readiness features.
+**Current Status**: IMPLEMENTED - The majority of issues have been addressed.
+
+---
+
+## Implementation Status
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| 1.1 Missing output_type | IMPLEMENTED | Added `AgentOutput` union type (SchedulingResponse, ClarificationRequest, ErrorResponse) |
+| 1.2 Tools via constructor | SKIPPED | Current approach is valid per docs |
+| 1.3 Logfire instrumentation | IMPLEMENTED | Changed to `logfire.instrument_pydantic_ai()` |
+| 2.1 Custom SSE streaming | IMPROVED | Better event types, type guards added |
+| 2.2 stream_text(delta=True) | IMPROVED | Proper message history now preserved |
+| 3.1 Manual history concatenation | IMPLEMENTED | Using `message_history` parameter with `ModelMessagesTypeAdapter` |
+| 4.1 AgentDeps as regular class | IMPLEMENTED | Converted to `@dataclass` |
+| 5.1 Tool docstrings | IMPLEMENTED | Added detailed Args/Returns/Raises docstrings |
+| 5.2 Error as strings | IMPLEMENTED | Added `ModelRetry` for recoverable errors |
+| 5.3 Direct DB access | KEPT | Pragmatic for current use case |
+| 6.1 Custom SSE events | IMPROVED | Added typed SSE events in frontend |
+| 7.1 Missing UsageLimits | IMPLEMENTED | Added request/token limits |
+| 7.2 Model fallback | SKIPPED | Per user request |
+| 8.1 AG-UI protocol | PARTIAL | Improved typing, full AG-UI for later |
+| 8.2 Structured outputs | IMPLEMENTED | Added AgentOutput union type |
+| 8.3 Testing infrastructure | SKIPPED | Per user request |
 
 ---
 
 ## 1. Agent Definition Issues
 
-### Issue 1.1: Missing Type Annotations for Agent Generic Parameters
+### Issue 1.1: Missing Type Annotations for Agent Generic Parameters [IMPLEMENTED]
 
 **Current Implementation** (`backend/agents/scheduling_agent.py`):
 ```python
@@ -42,10 +65,10 @@ agent = Agent[AgentDeps, SchedulingOutput](
 )
 ```
 
-**Proposed Fix**:
-- Define a structured `output_type` using Pydantic models
-- This enables type checking on `result.output` and better response handling
-- Consider using union types for different output scenarios (success, needs clarification, error)
+**Fix Applied**:
+- Added `AgentOutput` union type to `backend/models/io.py`
+- Agent now uses `output_type=AgentOutput`
+- Responses are typed as `SchedulingResponse | ClarificationRequest | ErrorResponse`
 
 **Priority**: Medium
 
@@ -83,16 +106,13 @@ async def create_activity_tool(ctx: RunContext[AgentDeps], req: ActivityCreateRe
     # ...
 ```
 
-**Proposed Fix**:
-- Consider refactoring tools to use `@agent.tool` decorator for better cohesion
-- Alternatively, keep the current approach but ensure consistent patterns
-- Current approach is valid per docs: "Tools can also be passed to the `tools` kwarg"
+**Status**: SKIPPED - Current approach is valid per docs: "Tools can also be passed to the `tools` kwarg"
 
 **Priority**: Low (current approach is valid, just less idiomatic)
 
 ---
 
-### Issue 1.3: Missing `instrument` Configuration for Logfire
+### Issue 1.3: Missing `instrument` Configuration for Logfire [IMPLEMENTED]
 
 **Current Implementation** (`backend/api/main.py`):
 ```python

@@ -25,7 +25,7 @@ app.add_middleware(
 if settings.LOGFIRE_TOKEN:
     logfire.configure(token=settings.LOGFIRE_TOKEN)
     logfire.instrument_fastapi(app)
-    logfire.instrument_pydantic()
+    logfire.instrument_pydantic_ai()  # Correct API for Pydantic AI agents
 
 # Include Routers
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])

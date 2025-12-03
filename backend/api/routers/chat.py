@@ -11,10 +11,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 from pydantic_ai import capture_run_messages
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelMessage,
+    ToolReturnPart,
+)
 import logfire
 
-from backend.agents.scheduling_agent import scheduling_agent
+from backend.agents.scheduling_agent import scheduling_agent, SCHEDULING_USAGE_LIMITS
 from backend.tools.p6_tools import AgentDeps
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
@@ -22,6 +26,7 @@ from backend.utils.safe_db import SafeP6Transaction
 from backend.utils.supabase_client import get_supabase
 from backend.repositories.conversation_repository import ConversationRepository
 from backend.repositories.p6_schedule_repository import P6ScheduleRepository
+from backend.models.io import SchedulingResponse, ClarificationRequest, ErrorResponse
 from backend.config.settings import settings
 
 router = APIRouter()
@@ -138,7 +143,7 @@ async def chat_stream(
                     p6_schedule_id=req.p6_schedule_id,
                 )
             
-            # Save user message
+            # Save user message to display history
             await conv_repo.save_message(
                 conversation_id=conversation_id,
                 role="user",
@@ -154,21 +159,20 @@ async def chat_stream(
             if lognos_project_id:
                 context_parts.append(f"Lognos Project: {lognos_project_id}")
             
-            # Get message history for context
-            history = await conv_repo.get_message_history(conversation_id, limit=20)
-            history_text = ""
-            if len(history) > 1:  # More than just the current message
-                history_text = "\n\nConversation history:\n"
-                for msg in history[:-1]:  # Exclude current message
-                    role = "User" if msg.role == "user" else "Assistant"
-                    history_text += f"{role}: {msg.content}\n"
-            
-            full_message = ""
+            # Build the user message with context
+            user_message = req.message
             if context_parts:
-                full_message = f"Context: {', '.join(context_parts)}\n"
-            if history_text:
-                full_message += history_text + "\n"
-            full_message += f"Current request: {req.message}"
+                user_message = f"Context: {', '.join(context_parts)}\n\nRequest: {req.message}"
+            
+            # Load Pydantic AI message history if available
+            message_history: list[ModelMessage] = []
+            history_json = await conv_repo.get_agent_message_history(conversation_id)
+            if history_json:
+                try:
+                    message_history = ModelMessagesTypeAdapter.validate_json(history_json)
+                except Exception as e:
+                    logfire.warning("Failed to parse message history", error=str(e))
+                    message_history = []
             
             yield sse_node_event("Scheduling", "working", "Executing agent")
             
@@ -188,33 +192,46 @@ async def chat_stream(
                     message=req.message,
                     conversation_id=conversation_id,
                     p6_proj_id=p6_proj_id,
+                    history_length=len(message_history),
                 ):
+                    # Track response for saving
+                    final_text = ""
+                    
                     # Use capture_run_messages to get tool results even if model fails
                     with capture_run_messages() as messages:
                         try:
-                            # Run the agent with streaming
-                            async with scheduling_agent.run_stream(full_message, deps=deps) as result:
-                                full_response = ""
-                                
-                                # Stream tokens as they arrive
-                                async for text in result.stream_text(delta=True):
-                                    full_response += text
-                                    yield sse_token_event(text)
-                                
-                                # Get final structured output if available
-                                final_result = await result.get_output()
-                                
-                                # Determine final response text
-                                if hasattr(final_result, 'data'):
-                                    final_text = str(final_result.data)
-                                elif hasattr(final_result, 'output'):
-                                    final_text = str(final_result.output)
-                                else:
-                                    final_text = full_response or str(final_result)
+                            # Run the agent (non-streaming for structured output)
+                            # Note: stream_text() cannot be used with output_type
+                            result = await scheduling_agent.run(
+                                user_message,
+                                deps=deps,
+                                message_history=message_history,
+                                usage_limits=SCHEDULING_USAGE_LIMITS,
+                            )
+                            
+                            # Get structured output
+                            final_result = result.output
+                            
+                            # Extract message based on output type
+                            if isinstance(final_result, SchedulingResponse):
+                                final_text = final_result.message
+                            elif isinstance(final_result, ClarificationRequest):
+                                final_text = final_result.question
+                                if final_result.options:
+                                    final_text += "\n\nOptions:\n" + "\n".join(f"- {opt}" for opt in final_result.options)
+                            elif isinstance(final_result, ErrorResponse):
+                                final_text = f"Error: {final_result.message}"
+                                if final_result.suggestion:
+                                    final_text += f"\n\nSuggestion: {final_result.suggestion}"
+                            else:
+                                # Fallback for string or unexpected output
+                                final_text = str(final_result)
+                            
+                            # Send the complete response as a token event
+                            yield sse_token_event(final_text)
                                     
                         except UnexpectedModelBehavior as model_err:
                             # Gemini sometimes returns empty responses after tool calls
-                            # Extract tool results from captured messages as fallback
                             logfire.warning(
                                 "Model output validation failed, extracting tool results",
                                 error=str(model_err),
@@ -229,39 +246,58 @@ async def chat_stream(
                                             tool_results.append(part.content)
                             
                             if tool_results:
-                                # Build a response from the tool results
                                 final_text = "Here is what I found:\n\n" + "\n\n".join(str(r) for r in tool_results)
-                                # Stream this fallback response
                                 yield sse_token_event(final_text)
                             else:
-                                # No tool results - re-raise
-                                raise
+                                final_text = f"I encountered an issue processing your request: {str(model_err)}"
+                                yield sse_token_event(final_text)
+                    
+                    # Save the new message history for next turn
+                    all_messages = list(messages)
+                    if all_messages:
+                        new_history_json = ModelMessagesTypeAdapter.dump_json(all_messages).decode()
+                        await conv_repo.save_agent_message_history(conversation_id, new_history_json)
                         
                         logfire.info(
                             "Agent completed",
                             response_length=len(final_text),
                             conversation_id=conversation_id,
+                            messages_saved=len(all_messages),
                         )
             
-            # Save assistant response
-            await conv_repo.save_message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=final_text,
-                model_name=settings.GOOGLE_DEFAULT_MODEL,
-            )
+            # Save assistant response to display history (always save, even if empty)
+            if final_text:
+                await conv_repo.save_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=final_text,
+                    model_name=settings.GOOGLE_DEFAULT_MODEL,
+                )
             
             # Auto-generate title if this is the first exchange
-            if not conv_exists or len(history) <= 1:
-                # Use first ~50 chars of user message as title
+            if not conv_exists:
                 auto_title = req.message[:50] + ("..." if len(req.message) > 50 else "")
                 await conv_repo.update_title_if_auto(conversation_id, auto_title)
             
-            # Send end event
+            # Send end event with structured data
             yield sse_end_event(final_text)
             
         except Exception as e:
+            error_message = f"I encountered an error processing your request: {str(e)}"
             logfire.error("Chat stream error", error=str(e), conversation_id=conversation_id)
+            
+            # Save error response as assistant message so history shows what happened
+            try:
+                await conv_repo.save_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=error_message,
+                    model_name=settings.GOOGLE_DEFAULT_MODEL,
+                    metadata={"error": True, "error_type": type(e).__name__},
+                )
+            except Exception as save_err:
+                logfire.error("Failed to save error message", error=str(save_err))
+            
             yield sse_error_event(str(e))
     
     return StreamingResponse(
@@ -325,10 +361,18 @@ async def chat_sync(
         if p6_proj_id:
             context_parts.append(f"P6 Project ID: {p6_proj_id}")
         
-        full_message = ""
+        user_message = req.message
         if context_parts:
-            full_message = f"Context: {', '.join(context_parts)}\n\n"
-        full_message += req.message
+            user_message = f"Context: {', '.join(context_parts)}\n\nRequest: {req.message}"
+        
+        # Load message history
+        message_history: list[ModelMessage] = []
+        history_json = await conv_repo.get_agent_message_history(conversation_id)
+        if history_json:
+            try:
+                message_history = ModelMessagesTypeAdapter.validate_json(history_json)
+            except Exception:
+                message_history = []
         
         # Run agent
         service = SchedulingService()
@@ -342,10 +386,30 @@ async def chat_sync(
             )
             
             with logfire.span("agent_run_sync", message=req.message, p6_proj_id=p6_proj_id):
-                result = await scheduling_agent.run(full_message, deps=deps)
-                
-                response_data = getattr(result, 'data', getattr(result, 'output', str(result)))
-                final_response = str(response_data)
+                with capture_run_messages() as messages:
+                    result = await scheduling_agent.run(
+                        user_message,
+                        deps=deps,
+                        message_history=message_history,
+                        usage_limits=SCHEDULING_USAGE_LIMITS,  # Prevent runaway loops
+                    )
+                    
+                    # Extract response based on output type
+                    final_result = result.output
+                    if isinstance(final_result, SchedulingResponse):
+                        final_response = final_result.message
+                    elif isinstance(final_result, ClarificationRequest):
+                        final_response = final_result.question
+                    elif isinstance(final_result, ErrorResponse):
+                        final_response = final_result.message
+                    else:
+                        final_response = str(final_result)
+                    
+                    # Save message history
+                    all_messages = list(messages)
+                    if all_messages:
+                        new_history_json = ModelMessagesTypeAdapter.dump_json(all_messages).decode()
+                        await conv_repo.save_agent_message_history(conversation_id, new_history_json)
         
         # Save assistant response
         await conv_repo.save_message(
@@ -362,5 +426,19 @@ async def chat_sync(
         )
         
     except Exception as e:
-        logfire.error("Chat sync error", error=str(e))
+        logfire.error("Chat sync error", error=str(e), conversation_id=conversation_id)
+        
+        # Save error response as assistant message
+        try:
+            error_message = f"I encountered an error processing your request: {str(e)}"
+            await conv_repo.save_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=error_message,
+                model_name=settings.GOOGLE_DEFAULT_MODEL,
+                metadata={"error": True, "error_type": type(e).__name__},
+            )
+        except Exception:
+            pass  # Don't fail the error handler
+        
         raise HTTPException(status_code=500, detail=str(e))

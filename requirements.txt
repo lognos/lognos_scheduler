@@ -3,9 +3,9 @@ python-dotenv
 fastapi
 uvicorn[standard]
 pydantic>=2.0
-pydantic-ai
+pydantic-ai>=0.0.30
 pydantic-settings
-logfire
+logfire[pydantic]
 numpy
 google-generativeai
 supabase

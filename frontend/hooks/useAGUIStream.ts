@@ -7,11 +7,13 @@ export type Message = {
     role: 'user' | 'assistant';
     content: string;
     timestamp: number;
+    responseType?: 'success' | 'clarification' | 'error';  // Structured response type
+    options?: string[];  // For clarification responses
 };
 
 export type AgentState = {
     node: string;
-    status: string;
+    status: 'working' | 'completed' | 'error';
     intent?: string;
     reasoning?: string;
 };
@@ -21,6 +23,30 @@ export interface ConversationMetadata {
     isNew: boolean;
     isSaved: boolean;
     title?: string;
+}
+
+// SSE Event Types from backend
+type SSETokenEvent = { type: 'token'; content: string };
+type SSEReasoningEvent = { type: 'reasoning'; node: string; content: string };
+type SSENodeEvent = { node: string; status: string; intent?: string };
+type SSEEndEvent = { node: 'End'; output: string };
+type SSEErrorEvent = { node: 'Error'; status: 'error'; error: string };
+type SSEEvent = SSETokenEvent | SSEReasoningEvent | SSENodeEvent | SSEEndEvent | SSEErrorEvent;
+
+function isTokenEvent(data: SSEEvent): data is SSETokenEvent {
+    return 'type' in data && data.type === 'token';
+}
+
+function isReasoningEvent(data: SSEEvent): data is SSEReasoningEvent {
+    return 'type' in data && data.type === 'reasoning';
+}
+
+function isEndEvent(data: SSEEvent): data is SSEEndEvent {
+    return 'node' in data && data.node === 'End';
+}
+
+function isErrorEvent(data: SSEEvent): data is SSEErrorEvent {
+    return 'node' in data && data.node === 'Error';
 }
 
 export function useAGUIStream() {
@@ -87,7 +113,7 @@ export function useAGUIStream() {
 
             if (!reader) return;
 
-            let assistantMessageId = crypto.randomUUID();
+            const assistantMessageId = crypto.randomUUID();
 
             // Add placeholder assistant message
             setMessages((prev) => [
@@ -111,9 +137,10 @@ export function useAGUIStream() {
                     if (line.startsWith('data: ')) {
                         const dataStr = line.slice(6);
                         try {
-                            const data = JSON.parse(dataStr);
+                            const data: SSEEvent = JSON.parse(dataStr);
 
-                            if (data.type === 'token') {
+                            if (isTokenEvent(data)) {
+                                // Streaming token from agent
                                 setMessages((prev) =>
                                     prev.map((msg) =>
                                         msg.id === assistantMessageId
@@ -121,14 +148,16 @@ export function useAGUIStream() {
                                             : msg
                                     )
                                 );
-                            } else if (data.type === 'reasoning') {
+                            } else if (isReasoningEvent(data)) {
+                                // Agent is thinking/reasoning
                                 setAgentState((prev) => ({
                                     node: data.node || prev?.node || 'Processing',
                                     status: 'working',
                                     intent: prev?.intent,
                                     reasoning: (prev?.reasoning || '') + data.content
                                 }));
-                            } else if (data.node === 'End') {
+                            } else if (isEndEvent(data)) {
+                                // Stream complete
                                 setAgentState(null);
                                 if (data.output) {
                                     setMessages((prev) =>
@@ -139,23 +168,24 @@ export function useAGUIStream() {
                                         )
                                     );
                                 }
+                            } else if (isErrorEvent(data)) {
+                                // Error from agent
+                                setAgentState({ node: 'Error', status: 'error' });
+                                setMessages((prev) =>
+                                    prev.map((msg) =>
+                                        msg.id === assistantMessageId
+                                            ? { ...msg, content: data.error, responseType: 'error' }
+                                            : msg
+                                    )
+                                );
                             } else {
+                                // Node status update
                                 setAgentState((prev) => ({
                                     node: data.node,
-                                    status: data.status,
+                                    status: data.status as 'working' | 'completed' | 'error',
                                     intent: data.intent,
                                     reasoning: prev?.reasoning,
                                 }));
-
-                                if (data.final_response) {
-                                    setMessages((prev) =>
-                                        prev.map((msg) =>
-                                            msg.id === assistantMessageId
-                                                ? { ...msg, content: data.final_response }
-                                                : msg
-                                        )
-                                    );
-                                }
                             }
                         } catch (e) {
                             console.error('Error parsing SSE data', e);
@@ -163,8 +193,8 @@ export function useAGUIStream() {
                     }
                 }
             }
-        } catch (error: any) {
-            if (error.name !== 'AbortError') {
+        } catch (error: unknown) {
+            if (error instanceof Error && error.name !== 'AbortError') {
                 console.error('Stream error:', error);
             }
         } finally {
