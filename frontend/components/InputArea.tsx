@@ -38,7 +38,7 @@ export const InputArea: React.FC<InputAreaProps> = ({ onSend, disabled }) => {
 
     return (
         <div className="w-full max-w-4xl mx-auto">
-            <div className="relative flex items-end bg-dark-800 border-0 rounded-xl shadow-lg focus-within:ring-1 focus-within:ring-blue-500 transition-all duration-200">
+            <div className="relative flex items-end bg-dark-800 border border-transparent rounded-xl shadow-lg focus-within:border-blue-500 transition-all duration-200">
                 <textarea
                     ref={textareaRef}
                     value={input}
@@ -47,7 +47,7 @@ export const InputArea: React.FC<InputAreaProps> = ({ onSend, disabled }) => {
                     placeholder={t('typeMessage')}
                     disabled={disabled}
                     rows={1}
-                    className="w-full py-3 pl-4 pr-12 bg-transparent border-none resize-none focus:ring-0 max-h-48 overflow-y-auto text-base text-white placeholder-gray-400 font-light leading-relaxed"
+                    className="w-full py-3 pl-4 pr-12 bg-transparent border-none resize-none focus:ring-0 focus:outline-none max-h-48 overflow-y-auto text-base text-white placeholder-gray-400 font-light leading-relaxed"
                 />
                 <button
                     onClick={() => handleSubmit()}
