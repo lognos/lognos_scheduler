@@ -180,20 +180,6 @@ class ListProjectsRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ActivityCodeAssignment(BaseModel):
-    """Single activity code assignment: type + value."""
-    model_config = ConfigDict(strict=True)
-    
-    code_type_name: StrictStr = Field(
-        ..., 
-        description="Activity code type name (e.g., 'PHASE', 'DISCIPLINE')"
-    )
-    code_value: StrictStr = Field(
-        ..., 
-        description="Activity code short name to assign (e.g., 'ENG', 'PRO')"
-    )
-
-
 class ListActivityCodesRequest(BaseModel):
     """Request to list available activity codes."""
     model_config = ConfigDict(strict=True)
@@ -220,9 +206,9 @@ class AssignActivityCodeRequest(BaseModel):
         ..., 
         description="Project ID containing the activity"
     )
-    assignments: list[ActivityCodeAssignment] = Field(
+    code_assignments: dict[str, str] = Field(
         ..., 
-        description="List of code type + value pairs to assign"
+        description="Map of code type name to code value. Example: {'PHASE': 'CON', 'DISCIPLINE': 'CIV'}"
     )
     replace_existing: bool = Field(
         default=True,
@@ -256,9 +242,9 @@ class BulkAssignActivityCodeRequest(BaseModel):
         ..., 
         description="Project ID containing the activities"
     )
-    assignments: list[ActivityCodeAssignment] = Field(
+    code_assignments: dict[str, str] = Field(
         ..., 
-        description="List of code type + value pairs to assign to all specified activities"
+        description="Map of code type name to code value. Example: {'PHASE': 'CON', 'DISCIPLINE': 'CIV'}"
     )
     replace_existing: bool = Field(
         default=True,

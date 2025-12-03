@@ -476,7 +476,14 @@ async def assign_activity_codes_tool(
     
     Args:
         ctx: Runtime context with dependencies (service, connection).
-        req: Request with task_code, proj_id, code_assignments, and optional replace_existing flag.
+        req: Request containing:
+            - task_code: Activity ID (e.g., "A1000")
+            - proj_id: Project ID (e.g., 1234)
+            - code_assignments: Dict mapping code type to value, e.g., {"PHASE": "CON", "DISCIPLINE": "CIV"}
+            - replace_existing: If True (default), replace existing codes
+    
+    Example code_assignments format:
+        {"PHASE": "ENG", "DISCIPLINE": "MECH", "AREA": "NORTH"}
     
     Returns:
         Summary of assigned and replaced codes, plus any errors.
@@ -569,7 +576,15 @@ async def bulk_assign_activity_codes_tool(
     
     Args:
         ctx: Runtime context with dependencies (service, connection).
-        req: Request with proj_id, code_assignments, and either task_codes or wbs_id.
+        req: Request containing:
+            - proj_id: Project ID (e.g., 1234)
+            - code_assignments: Dict mapping code type to value, e.g., {"PHASE": "CON", "DISCIPLINE": "CIV"}
+            - replace_existing: If True (default), replace existing codes
+            - task_codes: List of activity codes (e.g., ["A1000", "A1010"]), OR
+            - wbs_id: WBS ID to assign to all activities under it
+    
+    Example code_assignments format:
+        {"PHASE": "ENG", "DISCIPLINE": "MECH"}
     
     Returns:
         Summary with counts of assigned/replaced codes and per-activity details.

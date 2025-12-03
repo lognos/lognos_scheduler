@@ -417,26 +417,26 @@ class SchedulingService:
         replaced = []
         errors = []
         
-        for assignment in req.assignments:
+        for code_type_name, code_value in req.code_assignments.items():
             # Resolve code type
             code_type = self.repo.get_activity_code_type_by_name(
                 conn, 
-                assignment.code_type_name,
+                code_type_name,
                 req.proj_id
             )
             if not code_type:
-                errors.append(f"Code type '{assignment.code_type_name}' not found")
+                errors.append(f"Code type '{code_type_name}' not found")
                 continue
             
             # Resolve code value
-            code_value = self.repo.get_activity_code_by_short_name(
+            code_value_record = self.repo.get_activity_code_by_short_name(
                 conn,
                 code_type['actv_code_type_id'],
-                assignment.code_value
+                code_value
             )
-            if not code_value:
+            if not code_value_record:
                 errors.append(
-                    f"Code value '{assignment.code_value}' not found in type '{assignment.code_type_name}'"
+                    f"Code value '{code_value}' not found in type '{code_type_name}'"
                 )
                 continue
             
@@ -450,15 +450,15 @@ class SchedulingService:
             if existing and not req.replace_existing:
                 errors.append(
                     f"Activity already has code '{existing['short_name']}' for type "
-                    f"'{assignment.code_type_name}'. Set replace_existing=True to replace."
+                    f"'{code_type_name}'. Set replace_existing=True to replace."
                 )
                 continue
             
             if existing:
                 replaced.append({
-                    'code_type': assignment.code_type_name,
+                    'code_type': code_type_name,
                     'old_value': existing['short_name'],
-                    'new_value': assignment.code_value
+                    'new_value': code_value
                 })
             
             # Assign the code
@@ -467,11 +467,11 @@ class SchedulingService:
                 task_id,
                 req.proj_id,
                 code_type['actv_code_type_id'],
-                code_value['actv_code_id']
+                code_value_record['actv_code_id']
             )
             assigned.append({
-                'code_type': assignment.code_type_name,
-                'code_value': assignment.code_value
+                'code_type': code_type_name,
+                'code_value': code_value
             })
         
         conn.commit()
@@ -598,32 +598,32 @@ class SchedulingService:
         resolved_codes = []
         resolution_errors = []
         
-        for assignment in req.assignments:
+        for code_type_name, code_value in req.code_assignments.items():
             code_type = self.repo.get_activity_code_type_by_name(
                 conn, 
-                assignment.code_type_name,
+                code_type_name,
                 req.proj_id
             )
             if not code_type:
-                resolution_errors.append(f"Code type '{assignment.code_type_name}' not found")
+                resolution_errors.append(f"Code type '{code_type_name}' not found")
                 continue
             
-            code_value = self.repo.get_activity_code_by_short_name(
+            code_value_record = self.repo.get_activity_code_by_short_name(
                 conn,
                 code_type['actv_code_type_id'],
-                assignment.code_value
+                code_value
             )
-            if not code_value:
+            if not code_value_record:
                 resolution_errors.append(
-                    f"Code value '{assignment.code_value}' not found in type '{assignment.code_type_name}'"
+                    f"Code value '{code_value}' not found in type '{code_type_name}'"
                 )
                 continue
             
             resolved_codes.append({
-                'code_type_name': assignment.code_type_name,
+                'code_type_name': code_type_name,
                 'code_type_id': code_type['actv_code_type_id'],
-                'code_value': assignment.code_value,
-                'code_id': code_value['actv_code_id']
+                'code_value': code_value,
+                'code_id': code_value_record['actv_code_id']
             })
         
         if resolution_errors:

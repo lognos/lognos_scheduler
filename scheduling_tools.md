@@ -361,15 +361,8 @@ Assigns one or more activity codes to a single activity.
 |-------|------|----------|---------|-------------|
 | `task_code` | `str` | Yes | - | Activity to assign codes to |
 | `proj_id` | `int` | Yes | - | Project ID |
-| `assignments` | `list[ActivityCodeAssignment]` | Yes | - | Code type + value pairs |
+| `code_assignments` | `dict[str, str]` | Yes | - | Map of code type name to code value |
 | `replace_existing` | `bool` | No | `True` | Replace existing codes for each type |
-
-**ActivityCodeAssignment:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `code_type_name` | `str` | Code type (e.g., 'PHASE') |
-| `code_value` | `str` | Code short name (e.g., 'ENG') |
 
 **Returns:** Assignment results:
 ```
@@ -388,10 +381,10 @@ Replaced (previous values):
 req = AssignActivityCodeRequest(
     task_code="A1000",
     proj_id=1011,
-    assignments=[
-        ActivityCodeAssignment(code_type_name="PHASE", code_value="ENG"),
-        ActivityCodeAssignment(code_type_name="DISCIPLINE", code_value="CIV")
-    ]
+    code_assignments={
+        "PHASE": "ENG",
+        "DISCIPLINE": "CIV"
+    }
 )
 ```
 
@@ -437,7 +430,7 @@ Assigns activity codes to multiple activities at once.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `proj_id` | `int` | Yes | - | Project ID |
-| `assignments` | `list[ActivityCodeAssignment]` | Yes | - | Code assignments to apply |
+| `code_assignments` | `dict[str, str]` | Yes | - | Map of code type name to code value |
 | `replace_existing` | `bool` | No | `True` | Replace existing codes |
 | `task_codes` | `list[str]` | Conditional | - | Specific activities (mutually exclusive with `wbs_id`) |
 | `wbs_id` | `int` | Conditional | - | All activities under this WBS (mutually exclusive with `task_codes`) |
@@ -462,10 +455,10 @@ Showing first 10 of 15 activities:
 req = BulkAssignActivityCodeRequest(
     proj_id=1011,
     task_codes=["A1000", "A1010", "A1020"],
-    assignments=[
-        ActivityCodeAssignment(code_type_name="PHASE", code_value="CON"),
-        ActivityCodeAssignment(code_type_name="DISCIPLINE", code_value="STR")
-    ]
+    code_assignments={
+        "PHASE": "CON",
+        "DISCIPLINE": "STR"
+    }
 )
 ```
 
@@ -474,9 +467,9 @@ req = BulkAssignActivityCodeRequest(
 req = BulkAssignActivityCodeRequest(
     proj_id=1011,
     wbs_id=12345,  # All activities under this WBS
-    assignments=[
-        ActivityCodeAssignment(code_type_name="PHASE", code_value="ENG")
-    ]
+    code_assignments={
+        "PHASE": "ENG"
+    }
 )
 ```
 
@@ -538,9 +531,9 @@ available = await list_activity_codes_tool(ctx, ListActivityCodesRequest())
 await bulk_assign_activity_codes_tool(ctx, BulkAssignActivityCodeRequest(
     proj_id=1011,
     wbs_id=12345,  # Foundation WBS
-    assignments=[
-        ActivityCodeAssignment(code_type_name="PHASE", code_value="CON")
-    ]
+    code_assignments={
+        "PHASE": "CON"
+    }
 ))
 ```
 
@@ -550,9 +543,9 @@ await bulk_assign_activity_codes_tool(ctx, BulkAssignActivityCodeRequest(
 await bulk_assign_activity_codes_tool(ctx, BulkAssignActivityCodeRequest(
     proj_id=1011,
     task_codes=["A1000", "A1010", "A1020"],
-    assignments=[
-        ActivityCodeAssignment(code_type_name="PHASE", code_value="PRO")
-    ],
+    code_assignments={
+        "PHASE": "PRO"
+    },
     replace_existing=True
 ))
 
