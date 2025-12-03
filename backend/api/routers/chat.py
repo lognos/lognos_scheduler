@@ -9,6 +9,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
+from pydantic_ai import capture_run_messages
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import ToolReturnPart
 import logfire
 
 from backend.agents.scheduling_agent import scheduling_agent
@@ -186,25 +189,53 @@ async def chat_stream(
                     conversation_id=conversation_id,
                     p6_proj_id=p6_proj_id,
                 ):
-                    # Run the agent with streaming
-                    async with scheduling_agent.run_stream(full_message, deps=deps) as result:
-                        full_response = ""
-                        
-                        # Stream tokens as they arrive
-                        async for text in result.stream_text(delta=True):
-                            full_response += text
-                            yield sse_token_event(text)
-                        
-                        # Get final structured output if available
-                        final_result = await result.get_data()
-                        
-                        # Determine final response text
-                        if hasattr(final_result, 'data'):
-                            final_text = str(final_result.data)
-                        elif hasattr(final_result, 'output'):
-                            final_text = str(final_result.output)
-                        else:
-                            final_text = full_response or str(final_result)
+                    # Use capture_run_messages to get tool results even if model fails
+                    with capture_run_messages() as messages:
+                        try:
+                            # Run the agent with streaming
+                            async with scheduling_agent.run_stream(full_message, deps=deps) as result:
+                                full_response = ""
+                                
+                                # Stream tokens as they arrive
+                                async for text in result.stream_text(delta=True):
+                                    full_response += text
+                                    yield sse_token_event(text)
+                                
+                                # Get final structured output if available
+                                final_result = await result.get_output()
+                                
+                                # Determine final response text
+                                if hasattr(final_result, 'data'):
+                                    final_text = str(final_result.data)
+                                elif hasattr(final_result, 'output'):
+                                    final_text = str(final_result.output)
+                                else:
+                                    final_text = full_response or str(final_result)
+                                    
+                        except UnexpectedModelBehavior as model_err:
+                            # Gemini sometimes returns empty responses after tool calls
+                            # Extract tool results from captured messages as fallback
+                            logfire.warning(
+                                "Model output validation failed, extracting tool results",
+                                error=str(model_err),
+                            )
+                            
+                            # Find tool return parts from the messages
+                            tool_results = []
+                            for msg in messages:
+                                if hasattr(msg, 'parts'):
+                                    for part in msg.parts:
+                                        if isinstance(part, ToolReturnPart):
+                                            tool_results.append(part.content)
+                            
+                            if tool_results:
+                                # Build a response from the tool results
+                                final_text = "Here is what I found:\n\n" + "\n\n".join(str(r) for r in tool_results)
+                                # Stream this fallback response
+                                yield sse_token_event(final_text)
+                            else:
+                                # No tool results - re-raise
+                                raise
                         
                         logfire.info(
                             "Agent completed",

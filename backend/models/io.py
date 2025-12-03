@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, StrictStr
 from typing import Literal, Optional, Union
 from datetime import datetime
 
@@ -123,4 +123,118 @@ class ListProjectsRequest(BaseModel):
     include_eps_nodes: bool = Field(
         default=False, 
         description="If True, include EPS hierarchy nodes. Default shows only actual projects."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Activity Code Models
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ActivityCodeAssignment(BaseModel):
+    """Single activity code assignment: type + value."""
+    model_config = ConfigDict(strict=True)
+    
+    code_type_name: StrictStr = Field(
+        ..., 
+        description="Activity code type name (e.g., 'PHASE', 'DISCIPLINE')"
+    )
+    code_value: StrictStr = Field(
+        ..., 
+        description="Activity code short name to assign (e.g., 'ENG', 'PRO')"
+    )
+
+
+class ListActivityCodesRequest(BaseModel):
+    """Request to list available activity codes."""
+    model_config = ConfigDict(strict=True)
+    
+    include_project_codes: bool = Field(
+        default=False,
+        description="If True, include project-specific codes (requires proj_id). Default shows only global codes."
+    )
+    proj_id: int | None = Field(
+        default=None,
+        description="Project ID for project-specific codes. Required if include_project_codes=True."
+    )
+
+
+class AssignActivityCodeRequest(BaseModel):
+    """Request to assign activity codes to a single activity."""
+    model_config = ConfigDict(strict=True)
+    
+    task_code: StrictStr = Field(
+        ..., 
+        description="Activity code (TASK.TASK_CODE) to assign codes to"
+    )
+    proj_id: int = Field(
+        ..., 
+        description="Project ID containing the activity"
+    )
+    assignments: list[ActivityCodeAssignment] = Field(
+        ..., 
+        description="List of code type + value pairs to assign"
+    )
+    replace_existing: bool = Field(
+        default=True,
+        description="If True (default), replace existing code for each type. If False, fail if code already assigned."
+    )
+
+
+class RemoveActivityCodeRequest(BaseModel):
+    """Request to remove activity codes from an activity."""
+    model_config = ConfigDict(strict=True)
+    
+    task_code: StrictStr = Field(
+        ..., 
+        description="Activity code (TASK.TASK_CODE) to remove codes from"
+    )
+    proj_id: int = Field(
+        ..., 
+        description="Project ID containing the activity"
+    )
+    code_type_names: list[StrictStr] = Field(
+        ..., 
+        description="List of code type names to remove (e.g., ['PHASE', 'DISCIPLINE'])"
+    )
+
+
+class BulkAssignActivityCodeRequest(BaseModel):
+    """Request to assign activity codes to multiple activities."""
+    model_config = ConfigDict(strict=True)
+    
+    proj_id: int = Field(
+        ..., 
+        description="Project ID containing the activities"
+    )
+    assignments: list[ActivityCodeAssignment] = Field(
+        ..., 
+        description="List of code type + value pairs to assign to all specified activities"
+    )
+    replace_existing: bool = Field(
+        default=True,
+        description="If True (default), replace existing code for each type. If False, fail if code already assigned."
+    )
+    # Target selection - one of these must be provided
+    task_codes: list[StrictStr] | None = Field(
+        default=None,
+        description="List of activity codes to assign to. Mutually exclusive with wbs_id."
+    )
+    wbs_id: int | None = Field(
+        default=None,
+        description="WBS ID - assign to all activities under this WBS. Mutually exclusive with task_codes."
+    )
+
+
+class GetActivityCurrentCodesRequest(BaseModel):
+    """Request to get current activity code assignments for activities."""
+    model_config = ConfigDict(strict=True)
+    
+    task_codes: list[StrictStr] = Field(
+        ..., 
+        description="List of activity codes to get current assignments for"
+    )
+    proj_id: int = Field(
+        ..., 
+        description="Project ID containing the activities"
     )

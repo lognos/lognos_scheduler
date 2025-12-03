@@ -1,4 +1,5 @@
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 from backend.tools.p6_tools import (
     create_activity_tool, 
     create_relationship_tool, 
@@ -11,6 +12,11 @@ from backend.tools.p6_tools import (
     index_project_tool,
     delete_relationship_tool,
     update_relationship_tool,
+    list_activity_codes_tool,
+    get_activity_current_codes_tool,
+    assign_activity_codes_tool,
+    remove_activity_codes_tool,
+    bulk_assign_activity_codes_tool,
     AgentDeps
 )
 from backend.config.settings import settings
@@ -19,13 +25,26 @@ from backend.config.settings import settings
 scheduling_agent = Agent(
     settings.GOOGLE_DEFAULT_MODEL,
     deps_type=AgentDeps,
-    retries=3,  # Retry on output validation failures
+    retries=5,  # Increased retries for Gemini empty response issues
+    model_settings=ModelSettings(
+        temperature=0.3,  # Lower temperature for more consistent responses
+    ),
     system_prompt=(
         "You are an expert Primavera P6 Scheduler Agent. "
         "You have direct access to modify the P6 database to help users manage their schedules. "
         "You can create activities, link them with relationships, and update their progress. "
         "You can also search for activities using natural language descriptions. "
         "You can list all available projects using 'list_projects_tool' to help users discover project IDs and see project descriptions. "
+        "\n\n"
+        "Activity Codes: "
+        "You can manage activity codes using dedicated tools. "
+        "Use 'list_activity_codes_tool' to show available code types and values (e.g., PHASE: ENG/PRO/CON). "
+        "Use 'get_activity_current_codes_tool' BEFORE assigning codes to show what will be replaced. "
+        "Use 'assign_activity_codes_tool' to assign codes to a single activity. "
+        "Use 'remove_activity_codes_tool' to remove code assignments. "
+        "Use 'bulk_assign_activity_codes_tool' to assign the same codes to multiple activities at once (by task codes or WBS). "
+        "When suggesting activity codes, consider the activity name and description to recommend appropriate codes. "
+        "\n\n"
         "Always verify that the user provides necessary details (Project ID, WBS ID, Activity Codes). "
         "If details are missing, ask the user for clarification. "
         "When creating activities, use the 'task_code' parameter for the Activity ID (e.g., 'A1000'). Do NOT use 'task_id'. "
@@ -36,6 +55,9 @@ scheduling_agent = Agent(
         "If the search returns no results, try indexing the project using 'index_project_tool' and search again. "
         "Enforce P6 business rules: 'In Progress' requires Actual Start; 'Completed' requires Actual Start and Actual Finish. "
         "If the user specifies a relative date (e.g., 'a week later than planned'), use 'get_activity_details_tool' to find the 'target_start_date' (Planned Start) and calculate the new date. "
+        "\n\n"
+        "IMPORTANT: After using tools, you MUST always summarize the results in a natural text response for the user. "
+        "Never end your turn with just tool results - always explain what happened in plain language. "
         "Be concise and professional."
     ),
     tools=[
@@ -49,6 +71,11 @@ scheduling_agent = Agent(
         search_activity_tool,
         index_project_tool,
         delete_relationship_tool,
-        update_relationship_tool
+        update_relationship_tool,
+        list_activity_codes_tool,
+        get_activity_current_codes_tool,
+        assign_activity_codes_tool,
+        remove_activity_codes_tool,
+        bulk_assign_activity_codes_tool,
     ],
 )

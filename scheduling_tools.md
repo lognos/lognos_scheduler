@@ -11,9 +11,10 @@ This document describes the Pydantic AI tools available for the P6 Scheduling Ag
 3. [Activity Tools](#activity-tools)
 4. [Relationship Tools](#relationship-tools)
 5. [Project Tools](#project-tools)
-6. [Search Tools](#search-tools)
-7. [Data Models](#data-models)
-8. [Usage Patterns](#usage-patterns)
+6. [Activity Code Tools](#activity-code-tools)
+7. [Search Tools](#search-tools)
+8. [Data Models](#data-models)
+9. [Usage Patterns](#usage-patterns)
 
 ---
 
@@ -44,6 +45,7 @@ class AgentDeps:
 | **Activity** | `create_activity_tool`, `get_activity_details_tool`, `update_activity_status_tool`, `update_progress_tool` | CRUD operations on activities |
 | **Relationship** | `create_relationship_tool`, `update_relationship_tool`, `delete_relationship_tool` | Manage predecessor/successor links |
 | **Project** | `create_project_tool`, `list_projects_tool` | Create and list projects |
+| **Activity Codes** | `list_activity_codes_tool`, `get_activity_current_codes_tool`, `assign_activity_codes_tool`, `remove_activity_codes_tool`, `bulk_assign_activity_codes_tool` | Manage activity code assignments |
 | **Search** | `search_activity_tool`, `index_project_tool` | Semantic search via vector embeddings |
 
 ---
@@ -279,6 +281,280 @@ Total: 1 project(s)
 - Descriptions are extracted from the P6 "Description" notebook topic (stored in WBSMEMO table)
 - Long descriptions are truncated with `...`
 - Projects without descriptions show `-`
+
+---
+
+## Activity Code Tools
+
+Activity codes in P6 are used to categorize and filter activities. Each activity can have one code per code type. The tools support both **global codes** (shared across all projects) and **project-specific codes**.
+
+### list_activity_codes_tool
+
+Lists available activity code types and their values.
+
+**Request Model: `ListActivityCodesRequest`**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `include_project_codes` | `bool` | No | `False` | Include project-specific codes |
+| `proj_id` | `int` | Conditional | - | Required if `include_project_codes=True` |
+
+**Returns:** Formatted list of code types and values:
+```
+Available Activity Codes:
+
+Code Type: PHASE (Global)
+--------------------------------------------------
+  Short Name      Description
+  ENG             Engineering
+  PRO             Procurement
+  CON             Construction
+  COM             Commissioning
+  STU             Studies
+
+Code Type: DISCIPLINE (Global)
+--------------------------------------------------
+  (No values defined)
+
+Total: 2 code type(s)
+```
+
+**Notes:**
+- Global codes (scope `AS_Global`) are available to all projects
+- Project codes (scope `AS_Project`) are specific to one project
+- Use this to discover available codes before assigning
+
+---
+
+### get_activity_current_codes_tool
+
+Gets current activity code assignments for one or more activities. **Always use this before assigning codes** to show what will be replaced.
+
+**Request Model: `GetActivityCurrentCodesRequest`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `task_codes` | `list[str]` | Yes | Activity codes to check |
+| `proj_id` | `int` | Yes | Project ID |
+
+**Returns:** Current assignments per activity:
+```
+Current Activity Code Assignments:
+
+Activity: A1000
+  - PHASE: ENG (Engineering)
+  - DISCIPLINE: CIV (Civil)
+
+Activity: A1010
+  (No codes assigned)
+```
+
+---
+
+### assign_activity_codes_tool
+
+Assigns one or more activity codes to a single activity.
+
+**Request Model: `AssignActivityCodeRequest`**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `task_code` | `str` | Yes | - | Activity to assign codes to |
+| `proj_id` | `int` | Yes | - | Project ID |
+| `assignments` | `list[ActivityCodeAssignment]` | Yes | - | Code type + value pairs |
+| `replace_existing` | `bool` | No | `True` | Replace existing codes for each type |
+
+**ActivityCodeAssignment:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code_type_name` | `str` | Code type (e.g., 'PHASE') |
+| `code_value` | `str` | Code short name (e.g., 'ENG') |
+
+**Returns:** Assignment results:
+```
+Assignment results for activity 'A1000':
+
+Assigned:
+  - PHASE: ENG
+  - DISCIPLINE: CIV
+
+Replaced (previous values):
+  - PHASE: PRO -> ENG
+```
+
+**Example:**
+```python
+req = AssignActivityCodeRequest(
+    task_code="A1000",
+    proj_id=1011,
+    assignments=[
+        ActivityCodeAssignment(code_type_name="PHASE", code_value="ENG"),
+        ActivityCodeAssignment(code_type_name="DISCIPLINE", code_value="CIV")
+    ]
+)
+```
+
+**Notes:**
+- Each activity can have **one code per code type**
+- If a code of the same type is already assigned, it will be replaced (if `replace_existing=True`)
+- If `replace_existing=False` and a code exists, an error is returned
+
+---
+
+### remove_activity_codes_tool
+
+Removes activity code assignments from an activity.
+
+**Request Model: `RemoveActivityCodeRequest`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `task_code` | `str` | Yes | Activity to remove codes from |
+| `proj_id` | `int` | Yes | Project ID |
+| `code_type_names` | `list[str]` | Yes | Code types to remove |
+
+**Returns:** Removal results:
+```
+Removal results for activity 'A1000':
+
+Removed:
+  - PHASE: ENG
+  - DISCIPLINE: CIV
+
+Not found/not assigned:
+  - Code type 'SCOPE_OWNER' not found
+```
+
+---
+
+### bulk_assign_activity_codes_tool
+
+Assigns activity codes to multiple activities at once.
+
+**Request Model: `BulkAssignActivityCodeRequest`**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `proj_id` | `int` | Yes | - | Project ID |
+| `assignments` | `list[ActivityCodeAssignment]` | Yes | - | Code assignments to apply |
+| `replace_existing` | `bool` | No | `True` | Replace existing codes |
+| `task_codes` | `list[str]` | Conditional | - | Specific activities (mutually exclusive with `wbs_id`) |
+| `wbs_id` | `int` | Conditional | - | All activities under this WBS (mutually exclusive with `task_codes`) |
+
+**Returns:** Bulk assignment results:
+```
+Bulk assignment completed for 15 activities:
+
+Summary: 30 code(s) assigned, 5 code(s) replaced
+
+Showing first 10 of 15 activities:
+  A1000: 2 assigned
+    (replaced: PHASE)
+  A1010: 2 assigned
+  A1020: 2 assigned
+  ...
+  ... and 5 more
+```
+
+**Example - By Task Codes:**
+```python
+req = BulkAssignActivityCodeRequest(
+    proj_id=1011,
+    task_codes=["A1000", "A1010", "A1020"],
+    assignments=[
+        ActivityCodeAssignment(code_type_name="PHASE", code_value="CON"),
+        ActivityCodeAssignment(code_type_name="DISCIPLINE", code_value="STR")
+    ]
+)
+```
+
+**Example - By WBS:**
+```python
+req = BulkAssignActivityCodeRequest(
+    proj_id=1011,
+    wbs_id=12345,  # All activities under this WBS
+    assignments=[
+        ActivityCodeAssignment(code_type_name="PHASE", code_value="ENG")
+    ]
+)
+```
+
+**Notes:**
+- Must provide **either** `task_codes` **or** `wbs_id`, not both
+- WBS selection includes activities in nested WBS elements
+- Useful for categorizing groups of activities (e.g., "assign all foundation activities to PHASE=CON")
+
+---
+
+### Activity Codes Data Model
+
+**P6 Database Tables:**
+
+| Table | Purpose |
+|-------|---------|
+| `ACTVTYPE` | Code type definitions (PHASE, DISCIPLINE, etc.) |
+| `ACTVCODE` | Code values per type (ENG, PRO, CON, etc.) |
+| `TASKACTV` | Activity-to-code assignments |
+
+**Code Scopes:**
+
+| Scope | Constant | Description |
+|-------|----------|-------------|
+| Global | `AS_Global` | Available across all projects |
+| Project | `AS_Project` | Specific to one project |
+
+**Constraint:** One code per type per activity (composite PK in TASKACTV: `TASK_ID` + `ACTV_CODE_TYPE_ID`)
+
+---
+
+### Activity Codes Usage Patterns
+
+**Pattern 1: Suggest Codes Based on Activity Description**
+```python
+# Agent workflow:
+# 1. User asks: "What activity codes would you apply to activity A1000?"
+# 2. Get activity details to understand what it is
+# 3. List available codes
+# 4. Check current assignments
+# 5. Recommend based on activity name/description
+
+# Get current codes first
+current = await get_activity_current_codes_tool(ctx, GetActivityCurrentCodesRequest(
+    task_codes=["A1000"],
+    proj_id=1011
+))
+
+# List what's available
+available = await list_activity_codes_tool(ctx, ListActivityCodesRequest())
+
+# Agent reasons: "A1000 is 'Install Foundation Rebar' - this is Construction phase"
+# Agent suggests: PHASE=CON
+```
+
+**Pattern 2: Bulk Categorize by WBS**
+```python
+# Assign all activities under "Foundation" WBS to Construction phase
+await bulk_assign_activity_codes_tool(ctx, BulkAssignActivityCodeRequest(
+    proj_id=1011,
+    wbs_id=12345,  # Foundation WBS
+    assignments=[
+        ActivityCodeAssignment(code_type_name="PHASE", code_value="CON")
+    ]
+))
+```
+
+**Pattern 3: Update Multiple Specific Activities**
+```python
+# Reassign phase for specific activities
+await bulk_assign_activity_codes_tool(ctx, BulkAssignActivityCodeRequest(
+    proj_id=1011,
+    task_codes=["A1000", "A1010", "A1020"],
+    assignments=[
+        ActivityCodeAssignment(code_type_name="PHASE", code_value="PRO")
+    ],
+    replace_existing=True
+))
 
 ---
 

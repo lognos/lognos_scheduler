@@ -496,3 +496,372 @@ class P6Repository:
             """
             cursor.execute(sql_fallback, (proj_id, proj_id, proj_id))
             return cursor.fetchall()
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Activity Code Methods
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def list_activity_codes(
+        self, 
+        conn: sqlite3.Connection, 
+        include_project_codes: bool = False,
+        proj_id: int | None = None
+    ) -> list[dict]:
+        """
+        Lists activity code types and their values.
+        
+        Args:
+            conn: Database connection
+            include_project_codes: If True, include project-specific codes (requires proj_id)
+            proj_id: Project ID for project-specific codes
+            
+        Returns:
+            List of code types with their available values
+        """
+        cursor = conn.cursor()
+        
+        # Build scope filter
+        if include_project_codes and proj_id:
+            scope_filter = "(at.ACTV_CODE_TYPE_SCOPE = 'AS_Global' OR (at.ACTV_CODE_TYPE_SCOPE = 'AS_Project' AND at.PROJ_ID = ?))"
+            params: list = [proj_id]
+        else:
+            scope_filter = "at.ACTV_CODE_TYPE_SCOPE = 'AS_Global'"
+            params = []
+        
+        sql = f"""
+            SELECT 
+                at.ACTV_CODE_TYPE_ID,
+                at.ACTV_CODE_TYPE,
+                at.ACTV_CODE_TYPE_SCOPE,
+                at.PROJ_ID as TYPE_PROJ_ID,
+                at.SEQ_NUM as TYPE_SEQ,
+                ac.ACTV_CODE_ID,
+                ac.SHORT_NAME,
+                ac.ACTV_CODE_NAME,
+                ac.PARENT_ACTV_CODE_ID,
+                ac.SEQ_NUM as CODE_SEQ
+            FROM ACTVTYPE at
+            LEFT JOIN ACTVCODE ac ON at.ACTV_CODE_TYPE_ID = ac.ACTV_CODE_TYPE_ID
+            WHERE {scope_filter}
+            ORDER BY at.SEQ_NUM, at.ACTV_CODE_TYPE, ac.SEQ_NUM, ac.SHORT_NAME
+        """
+        
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        
+        # Group by code type
+        types_map: dict[int, dict] = {}
+        for row in rows:
+            type_id = row[0]
+            if type_id not in types_map:
+                types_map[type_id] = {
+                    'actv_code_type_id': type_id,
+                    'actv_code_type': row[1],
+                    'scope': row[2],
+                    'proj_id': row[3],
+                    'seq_num': row[4],
+                    'values': []
+                }
+            # Add value if exists (LEFT JOIN may return NULL)
+            if row[5] is not None:
+                types_map[type_id]['values'].append({
+                    'actv_code_id': row[5],
+                    'short_name': row[6],
+                    'actv_code_name': row[7],
+                    'parent_actv_code_id': row[8],
+                    'seq_num': row[9]
+                })
+        
+        return list(types_map.values())
+
+    def get_activity_code_type_by_name(
+        self, 
+        conn: sqlite3.Connection, 
+        code_type_name: str,
+        proj_id: int | None = None
+    ) -> dict | None:
+        """
+        Gets an activity code type by its name.
+        
+        Args:
+            conn: Database connection
+            code_type_name: Name of the code type (e.g., 'PHASE')
+            proj_id: Project ID for project-specific codes
+            
+        Returns:
+            Code type info or None if not found
+        """
+        cursor = conn.cursor()
+        
+        # Try global first, then project-specific if proj_id provided
+        sql = """
+            SELECT ACTV_CODE_TYPE_ID, ACTV_CODE_TYPE, ACTV_CODE_TYPE_SCOPE, PROJ_ID
+            FROM ACTVTYPE 
+            WHERE ACTV_CODE_TYPE = ?
+            AND (ACTV_CODE_TYPE_SCOPE = 'AS_Global' OR (ACTV_CODE_TYPE_SCOPE = 'AS_Project' AND PROJ_ID = ?))
+            ORDER BY CASE WHEN ACTV_CODE_TYPE_SCOPE = 'AS_Global' THEN 0 ELSE 1 END
+            LIMIT 1
+        """
+        cursor.execute(sql, (code_type_name, proj_id))
+        row = cursor.fetchone()
+        
+        if row:
+            return {
+                'actv_code_type_id': row[0],
+                'actv_code_type': row[1],
+                'scope': row[2],
+                'proj_id': row[3]
+            }
+        return None
+
+    def get_activity_code_by_short_name(
+        self, 
+        conn: sqlite3.Connection, 
+        code_type_id: int,
+        short_name: str
+    ) -> dict | None:
+        """
+        Gets an activity code value by its short name within a type.
+        
+        Args:
+            conn: Database connection
+            code_type_id: Activity code type ID
+            short_name: Short name of the code value
+            
+        Returns:
+            Code value info or None if not found
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT ACTV_CODE_ID, SHORT_NAME, ACTV_CODE_NAME, PARENT_ACTV_CODE_ID
+            FROM ACTVCODE 
+            WHERE ACTV_CODE_TYPE_ID = ? AND SHORT_NAME = ?
+        """
+        cursor.execute(sql, (code_type_id, short_name))
+        row = cursor.fetchone()
+        
+        if row:
+            return {
+                'actv_code_id': row[0],
+                'short_name': row[1],
+                'actv_code_name': row[2],
+                'parent_actv_code_id': row[3]
+            }
+        return None
+
+    def get_task_activity_codes(
+        self, 
+        conn: sqlite3.Connection, 
+        task_id: int
+    ) -> list[dict]:
+        """
+        Gets current activity code assignments for a task.
+        
+        Args:
+            conn: Database connection
+            task_id: Task ID
+            
+        Returns:
+            List of current activity code assignments
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT 
+                ta.ACTV_CODE_TYPE_ID,
+                ta.ACTV_CODE_ID,
+                at.ACTV_CODE_TYPE,
+                ac.SHORT_NAME,
+                ac.ACTV_CODE_NAME
+            FROM TASKACTV ta
+            JOIN ACTVTYPE at ON ta.ACTV_CODE_TYPE_ID = at.ACTV_CODE_TYPE_ID
+            JOIN ACTVCODE ac ON ta.ACTV_CODE_ID = ac.ACTV_CODE_ID
+            WHERE ta.TASK_ID = ?
+            ORDER BY at.SEQ_NUM
+        """
+        cursor.execute(sql, (task_id,))
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'actv_code_type_id': row[0],
+                'actv_code_id': row[1],
+                'code_type_name': row[2],
+                'short_name': row[3],
+                'code_name': row[4]
+            })
+        return results
+
+    def get_tasks_by_codes(
+        self, 
+        conn: sqlite3.Connection, 
+        task_codes: list[str],
+        proj_id: int
+    ) -> list[dict]:
+        """
+        Gets task info by task codes.
+        
+        Args:
+            conn: Database connection
+            task_codes: List of task codes
+            proj_id: Project ID
+            
+        Returns:
+            List of task info dicts with task_id, task_code, task_name
+        """
+        cursor = conn.cursor()
+        
+        placeholders = ','.join(['?'] * len(task_codes))
+        sql = f"""
+            SELECT TASK_ID, TASK_CODE, TASK_NAME
+            FROM TASK
+            WHERE TASK_CODE IN ({placeholders}) AND PROJ_ID = ?
+            AND DELETE_SESSION_ID IS NULL
+        """
+        cursor.execute(sql, [*task_codes, proj_id])
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'task_id': row[0],
+                'task_code': row[1],
+                'task_name': row[2]
+            })
+        return results
+
+    def get_tasks_by_wbs(
+        self, 
+        conn: sqlite3.Connection, 
+        wbs_id: int,
+        proj_id: int
+    ) -> list[dict]:
+        """
+        Gets all tasks under a WBS (including nested WBS).
+        
+        Args:
+            conn: Database connection
+            wbs_id: WBS ID
+            proj_id: Project ID
+            
+        Returns:
+            List of task info dicts
+        """
+        cursor = conn.cursor()
+        
+        # Recursive CTE to get all WBS IDs under the given WBS
+        sql = """
+            WITH RECURSIVE WBS_TREE(WBS_ID) AS (
+                SELECT WBS_ID FROM PROJWBS WHERE WBS_ID = ? AND PROJ_ID = ?
+                UNION ALL
+                SELECT w.WBS_ID FROM PROJWBS w
+                JOIN WBS_TREE wt ON w.PARENT_WBS_ID = wt.WBS_ID
+                WHERE w.PROJ_ID = ?
+            )
+            SELECT t.TASK_ID, t.TASK_CODE, t.TASK_NAME
+            FROM TASK t
+            WHERE t.WBS_ID IN (SELECT WBS_ID FROM WBS_TREE)
+            AND t.DELETE_SESSION_ID IS NULL
+            ORDER BY t.TASK_CODE
+        """
+        cursor.execute(sql, (wbs_id, proj_id, proj_id))
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'task_id': row[0],
+                'task_code': row[1],
+                'task_name': row[2]
+            })
+        return results
+
+    def assign_activity_code(
+        self, 
+        conn: sqlite3.Connection, 
+        task_id: int,
+        proj_id: int,
+        actv_code_type_id: int,
+        actv_code_id: int
+    ) -> None:
+        """
+        Assigns an activity code to a task.
+        Replaces existing code for the same type (UPSERT behavior).
+        
+        Args:
+            conn: Database connection
+            task_id: Task ID
+            proj_id: Project ID
+            actv_code_type_id: Activity code type ID
+            actv_code_id: Activity code value ID
+        """
+        cursor = conn.cursor()
+        now = datetime.now()
+        
+        # TASKACTV uses composite primary key (TASK_ID, ACTV_CODE_TYPE_ID)
+        # Use INSERT OR REPLACE for upsert behavior
+        sql = """
+            INSERT OR REPLACE INTO TASKACTV (
+                TASK_ID, PROJ_ID, ACTV_CODE_TYPE_ID, ACTV_CODE_ID,
+                CREATE_DATE, UPDATE_DATE, CREATE_USER, UPDATE_USER
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        cursor.execute(sql, (
+            task_id, proj_id, actv_code_type_id, actv_code_id,
+            now, now, "Agent", "Agent"
+        ))
+
+    def remove_activity_code(
+        self, 
+        conn: sqlite3.Connection, 
+        task_id: int,
+        actv_code_type_id: int
+    ) -> bool:
+        """
+        Removes an activity code assignment from a task.
+        
+        Args:
+            conn: Database connection
+            task_id: Task ID
+            actv_code_type_id: Activity code type ID
+            
+        Returns:
+            True if a row was deleted, False if no matching assignment
+        """
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "DELETE FROM TASKACTV WHERE TASK_ID = ? AND ACTV_CODE_TYPE_ID = ?",
+            (task_id, actv_code_type_id)
+        )
+        return cursor.rowcount > 0
+
+    def check_activity_code_exists(
+        self, 
+        conn: sqlite3.Connection, 
+        task_id: int,
+        actv_code_type_id: int
+    ) -> dict | None:
+        """
+        Checks if an activity code assignment exists for a task/type.
+        
+        Returns:
+            Current assignment info or None
+        """
+        cursor = conn.cursor()
+        
+        sql = """
+            SELECT ta.ACTV_CODE_ID, ac.SHORT_NAME, ac.ACTV_CODE_NAME
+            FROM TASKACTV ta
+            JOIN ACTVCODE ac ON ta.ACTV_CODE_ID = ac.ACTV_CODE_ID
+            WHERE ta.TASK_ID = ? AND ta.ACTV_CODE_TYPE_ID = ?
+        """
+        cursor.execute(sql, (task_id, actv_code_type_id))
+        row = cursor.fetchone()
+        
+        if row:
+            return {
+                'actv_code_id': row[0],
+                'short_name': row[1],
+                'code_name': row[2]
+            }
+        return None
