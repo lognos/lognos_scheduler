@@ -19,6 +19,7 @@ from backend.config.settings import settings
 scheduling_agent = Agent(
     settings.GOOGLE_DEFAULT_MODEL,
     deps_type=AgentDeps,
+    retries=3,  # Retry on output validation failures
     system_prompt=(
         "You are an expert Primavera P6 Scheduler Agent. "
         "You have direct access to modify the P6 database to help users manage their schedules. "

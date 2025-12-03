@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logfire
 
-from backend.api.routers import chat, conversations, p6_schedules
+from backend.api.routers import chat, conversations, p6_schedules, projects
 from backend.config.settings import settings
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
@@ -31,6 +31,7 @@ if settings.LOGFIRE_TOKEN:
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(p6_schedules.router, prefix="/api/v1/p6-schedules", tags=["p6-schedules"])
+app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
 
 @app.get("/health")
 async def health_check():

@@ -36,6 +36,20 @@ class P6Relationship(BaseModel):
 
 
 # ============================================================
+# Project Domain Models
+# ============================================================
+
+class Project(BaseModel):
+    """Project domain model."""
+    project_id: str
+    project_name: str
+    company_id: Optional[str] = None
+    project_overview: Optional[str] = None
+    metadata: dict = {}
+    created_at: Optional[str] = None
+
+
+# ============================================================
 # Conversation Domain Models
 # ============================================================
 

@@ -159,7 +159,8 @@ class ConversationRepository:
         update: ConversationUpdate,
     ) -> bool:
         """Update conversation fields (title, visible, status)."""
-        data = update.model_dump(exclude_unset=True)
+        # Get only fields that were explicitly set (not None)
+        data = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
         if not data:
             return True
         
