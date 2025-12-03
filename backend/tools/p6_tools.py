@@ -2,7 +2,7 @@ from pydantic_ai import RunContext
 import logfire
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
-from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, SearchActivityRequest, IndexProjectRequest, RelationshipDeleteRequest, RelationshipUpdateRequest
+from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, SearchActivityRequest, IndexProjectRequest, RelationshipDeleteRequest, RelationshipUpdateRequest, ListProjectsRequest
 
 # We define the dependencies class
 class AgentDeps:
@@ -172,3 +172,51 @@ async def create_project_tool(ctx: RunContext[AgentDeps], req: ProjectCreateRequ
     except Exception as e:
         logfire.error("Error in create_project_tool", error=str(e))
         return f"Error creating project: {str(e)}"
+
+@logfire.instrument("list_projects_tool")
+async def list_projects_tool(ctx: RunContext[AgentDeps], req: ListProjectsRequest) -> str:
+    """
+    Lists all projects in the P6 database with their key information.
+    Returns a formatted table of projects with ID, name, dates, activity count, and description.
+    """
+    try:
+        projects = ctx.deps.service.list_projects(req, conn=ctx.deps.conn)
+        
+        if not projects:
+            return "No projects found in the database."
+        
+        # Build formatted table output
+        lines = ["Available Projects:", ""]
+        
+        # Table header
+        header = f"{'PROJ_ID':<10} {'Short Name':<15} {'Project Name':<35} {'Plan Start':<12} {'Plan End':<12} {'Activities':<10} {'Description'}"
+        lines.append(header)
+        lines.append("-" * 130)
+        
+        for proj in projects:
+            proj_id = proj.get('PROJ_ID', '-')
+            short_name = proj.get('PROJ_SHORT_NAME', '-') or '-'
+            project_name = proj.get('PROJECT_NAME', '-') or '-'
+            plan_start = proj.get('PLAN_START_DATE', '-') or '-'
+            plan_end = proj.get('PLAN_END_DATE', '-') or '-'
+            activity_count = proj.get('ACTIVITY_COUNT', 0) or 0
+            description = proj.get('DESCRIPTION') or '-'
+            
+            # Truncate long fields
+            if len(project_name) > 33:
+                project_name = project_name[:30] + '...'
+            if len(short_name) > 13:
+                short_name = short_name[:10] + '...'
+            if len(description) > 50:
+                description = description[:47] + '...'
+            
+            row = f"{proj_id:<10} {short_name:<15} {project_name:<35} {plan_start:<12} {plan_end:<12} {activity_count:<10} {description}"
+            lines.append(row)
+        
+        lines.append("")
+        lines.append(f"Total: {len(projects)} project(s)")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        logfire.error("Error in list_projects_tool", error=str(e))
+        return f"Error listing projects: {str(e)}"

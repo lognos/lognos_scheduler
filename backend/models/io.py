@@ -117,3 +117,10 @@ class SearchActivityRequest(BaseModel):
 class IndexProjectRequest(BaseModel):
     model_config = ConfigDict(strict=True)
     proj_id: int = Field(..., description="Project ID to index")
+
+class ListProjectsRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+    include_eps_nodes: bool = Field(
+        default=False, 
+        description="If True, include EPS hierarchy nodes. Default shows only actual projects."
+    )

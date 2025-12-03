@@ -1,4 +1,4 @@
-from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, RelationshipDeleteRequest, RelationshipUpdateRequest
+from backend.models.io import ActivityCreateRequest, RelationshipCreateRequest, ProgressUpdateRequest, ActivityDetailsRequest, ActivityStatusUpdateRequest, ProjectCreateRequest, RelationshipDeleteRequest, RelationshipUpdateRequest, ListProjectsRequest
 from backend.models.domain import P6Activity, P6Relationship
 from backend.utils.db import get_db_connection
 from backend.utils.safe_db import SafeP6Transaction
@@ -278,3 +278,34 @@ class SchedulingService:
         )
         conn.commit()
         return f"Updated progress for {req.task_code}"
+
+    def list_projects(self, req: ListProjectsRequest, conn=None) -> list[dict]:
+        """Lists all projects with summary information including descriptions."""
+        if conn:
+            return self._list_projects_impl(conn, req)
+        
+        # Read-only operation, use direct connection
+        with get_db_connection() as direct_conn:
+            return self._list_projects_impl(direct_conn, req)
+    
+    def _list_projects_impl(self, conn, req: ListProjectsRequest) -> list[dict]:
+        """Implementation for list_projects."""
+        projects = self.repo.list_projects(conn, include_eps=req.include_eps_nodes)
+        
+        # Format dates as ISO strings for readability
+        for proj in projects:
+            for date_field in ['PLAN_START_DATE', 'PLAN_END_DATE', 'LAST_RECALC_DATE', 'ADD_DATE']:
+                if proj.get(date_field):
+                    # Parse and format if it's a string, otherwise format datetime
+                    val = proj[date_field]
+                    if isinstance(val, str):
+                        # Already a string, try to parse and reformat for consistency
+                        try:
+                            dt = datetime.fromisoformat(val.replace(' ', 'T'))
+                            proj[date_field] = dt.strftime('%Y-%m-%d')
+                        except ValueError:
+                            pass  # Keep original if parsing fails
+                    else:
+                        proj[date_field] = val.strftime('%Y-%m-%d') if val else None
+        
+        return projects

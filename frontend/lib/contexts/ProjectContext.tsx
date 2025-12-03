@@ -31,7 +31,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             setIsLoading(true);
             console.log('Fetching projects with token:', session.access_token.slice(0, 10) + '...');
             // Bypass proxy to debug auth header issue
-            const response = await fetch('http://localhost:8400/api/v1/projects/', {
+            const response = await fetch('http://localhost:8500/api/v1/projects/', {
                 headers: {
                     'Authorization': `Bearer ${session.access_token}`
                 }

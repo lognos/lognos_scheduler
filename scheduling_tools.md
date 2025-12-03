@@ -43,7 +43,7 @@ class AgentDeps:
 |----------|-------|---------|
 | **Activity** | `create_activity_tool`, `get_activity_details_tool`, `update_activity_status_tool`, `update_progress_tool` | CRUD operations on activities |
 | **Relationship** | `create_relationship_tool`, `update_relationship_tool`, `delete_relationship_tool` | Manage predecessor/successor links |
-| **Project** | `create_project_tool` | Create new projects |
+| **Project** | `create_project_tool`, `list_projects_tool` | Create and list projects |
 | **Search** | `search_activity_tool`, `index_project_tool` | Semantic search via vector embeddings |
 
 ---
@@ -243,6 +243,42 @@ Creates a new project in the P6 database.
 **Returns:** `"Successfully created project '{project_short_name}' with ID {proj_id}. Root WBS ID is {wbs_id}."`
 
 **Note:** Creating a project automatically creates a root WBS element.
+
+---
+
+### list_projects_tool
+
+Lists all projects in the P6 database with summary information including descriptions.
+
+**Request Model: `ListProjectsRequest`**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `include_eps_nodes` | `bool` | No | `False` | Include EPS hierarchy nodes |
+
+**Returns:** Formatted table with:
+- Project ID (internal reference for other operations)
+- Short Name (user-facing project code)
+- Project Name (full name from root WBS)
+- Plan Start/End dates
+- Activity count
+- Description (from "Description" notebook topic, if exists)
+
+**Example Response:**
+```
+Available Projects:
+
+PROJ_ID    Short Name      Project Name                        Plan Start   Plan End     Activities Description
+----------------------------------------------------------------------------------------------------------------------------------
+1011       PROJ-PHX        Phoenix Tower Construction          2025-12-07   2026-04-26   500        This is a test project, and...
+
+Total: 1 project(s)
+```
+
+**Notes:**
+- Descriptions are extracted from the P6 "Description" notebook topic (stored in WBSMEMO table)
+- Long descriptions are truncated with `...`
+- Projects without descriptions show `-`
 
 ---
 

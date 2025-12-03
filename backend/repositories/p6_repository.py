@@ -1,9 +1,41 @@
 import sqlite3
 import uuid
 import base64
+import re
+from html.parser import HTMLParser
 from datetime import datetime
 from typing import Optional
 from backend.models.domain import P6Activity, P6Relationship
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Extracts plain text from HTML content."""
+    def __init__(self):
+        super().__init__()
+        self.text_parts = []
+    
+    def handle_data(self, data):
+        text = data.strip()
+        if text:
+            self.text_parts.append(text)
+    
+    def get_text(self) -> str:
+        return ' '.join(self.text_parts)
+
+
+def extract_text_from_html(html_content: bytes | str | None) -> str | None:
+    """Extract plain text from P6 notebook HTML content."""
+    if not html_content:
+        return None
+    if isinstance(html_content, bytes):
+        html_content = html_content.decode('utf-8', errors='replace')
+    try:
+        parser = _HTMLTextExtractor()
+        parser.feed(html_content)
+        result = parser.get_text()
+        return result if result else None
+    except Exception:
+        return None
 
 class P6Repository:
     def _generate_guid(self) -> str:
@@ -360,6 +392,56 @@ class P6Repository:
         cursor = conn.cursor()
         cursor.execute("SELECT TASK_ID, EMBEDDING_VECTOR FROM TASK_EMBEDDINGS WHERE PROJ_ID = ?", (proj_id,))
         return cursor.fetchall()
+
+    def list_projects(self, conn: sqlite3.Connection, include_eps: bool = False) -> list[dict]:
+        """
+        Lists all projects from the P6 database with summary information.
+        
+        Args:
+            conn: Database connection
+            include_eps: If True, include EPS hierarchy nodes. Default only actual projects.
+            
+        Returns:
+            List of dictionaries with project information including description.
+        """
+        cursor = conn.cursor()
+        
+        # Filter: PROJECT_FLAG = 'Y' means it's an actual project, 'N' means EPS node
+        # Note: In P6, the meaning is inverted from typical boolean logic
+        project_filter = "" if include_eps else "AND p.PROJECT_FLAG = 'Y'"
+        
+        sql = f"""
+            SELECT 
+                p.PROJ_ID,
+                p.PROJ_SHORT_NAME,
+                pw.WBS_NAME as PROJECT_NAME,
+                p.PLAN_START_DATE,
+                p.PLAN_END_DATE,
+                p.LAST_RECALC_DATE,
+                p.ADD_DATE,
+                (SELECT COUNT(*) FROM TASK t 
+                 WHERE t.PROJ_ID = p.PROJ_ID 
+                 AND t.DELETE_SESSION_ID IS NULL) as ACTIVITY_COUNT,
+                wm.WBS_MEMO as DESCRIPTION_HTML
+            FROM PROJECT p
+            LEFT JOIN PROJWBS pw ON p.PROJ_ID = pw.PROJ_ID AND pw.PROJ_NODE_FLAG = 'Y'
+            LEFT JOIN WBSMEMO wm ON pw.WBS_ID = wm.WBS_ID AND wm.MEMO_TYPE_ID = 33
+            WHERE p.DELETE_SESSION_ID IS NULL
+            {project_filter}
+            ORDER BY p.PROJ_SHORT_NAME
+        """
+        
+        cursor.execute(sql)
+        columns = [desc[0] for desc in cursor.description]
+        
+        results = []
+        for row in cursor.fetchall():
+            row_dict = dict(zip(columns, row))
+            # Extract plain text from HTML description
+            row_dict['DESCRIPTION'] = extract_text_from_html(row_dict.pop('DESCRIPTION_HTML', None))
+            results.append(row_dict)
+        
+        return results
 
     def get_task_text_data(self, conn: sqlite3.Connection, proj_id: int) -> list[tuple[int, str, str, str, str]]:
         """

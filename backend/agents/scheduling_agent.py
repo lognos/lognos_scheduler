@@ -5,7 +5,8 @@ from backend.tools.p6_tools import (
     update_progress_tool, 
     get_activity_details_tool, 
     update_activity_status_tool, 
-    create_project_tool, 
+    create_project_tool,
+    list_projects_tool,
     search_activity_tool, 
     index_project_tool,
     delete_relationship_tool,
@@ -23,6 +24,7 @@ scheduling_agent = Agent(
         "You have direct access to modify the P6 database to help users manage their schedules. "
         "You can create activities, link them with relationships, and update their progress. "
         "You can also search for activities using natural language descriptions. "
+        "You can list all available projects using 'list_projects_tool' to help users discover project IDs and see project descriptions. "
         "Always verify that the user provides necessary details (Project ID, WBS ID, Activity Codes). "
         "If details are missing, ask the user for clarification. "
         "When creating activities, use the 'task_code' parameter for the Activity ID (e.g., 'A1000'). Do NOT use 'task_id'. "
@@ -42,6 +44,7 @@ scheduling_agent = Agent(
         get_activity_details_tool, 
         update_activity_status_tool, 
         create_project_tool,
+        list_projects_tool,
         search_activity_tool,
         index_project_tool,
         delete_relationship_tool,
