@@ -865,3 +865,156 @@ class P6Repository:
                 'code_name': row[2]
             }
         return None
+
+    def find_wbs_by_name(
+        self, 
+        conn: sqlite3.Connection, 
+        wbs_name: str,
+        proj_id: int
+    ) -> list[dict]:
+        """
+        Finds WBS elements by name (partial match).
+        
+        Args:
+            conn: Database connection
+            wbs_name: WBS short name to search for (partial match)
+            proj_id: Project ID
+            
+        Returns:
+            List of matching WBS elements with their IDs and full paths
+        """
+        cursor = conn.cursor()
+        
+        # Use recursive CTE to get WBS path, then filter by name match
+        sql = """
+            WITH RECURSIVE WBS_PATH(WBS_ID, WBS_SHORT_NAME, WBS_NAME, PATH_NAME, PARENT_WBS_ID, DEPTH) AS (
+                SELECT WBS_ID, WBS_SHORT_NAME, WBS_NAME, WBS_SHORT_NAME, PARENT_WBS_ID, 0
+                FROM PROJWBS
+                WHERE PROJ_ID = ? AND PROJ_NODE_FLAG = 'Y'
+                
+                UNION ALL
+                
+                SELECT w.WBS_ID, w.WBS_SHORT_NAME, w.WBS_NAME, 
+                       wp.PATH_NAME || '.' || w.WBS_SHORT_NAME,
+                       w.PARENT_WBS_ID, wp.DEPTH + 1
+                FROM PROJWBS w
+                JOIN WBS_PATH wp ON w.PARENT_WBS_ID = wp.WBS_ID
+                WHERE w.PROJ_ID = ?
+            )
+            SELECT WBS_ID, WBS_SHORT_NAME, WBS_NAME, PATH_NAME, DEPTH
+            FROM WBS_PATH
+            WHERE WBS_SHORT_NAME LIKE ? OR PATH_NAME LIKE ?
+            ORDER BY PATH_NAME
+        """
+        search_pattern = f"%{wbs_name}%"
+        cursor.execute(sql, (proj_id, proj_id, search_pattern, search_pattern))
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'wbs_id': row[0],
+                'wbs_short_name': row[1],
+                'wbs_name': row[2],
+                'wbs_path': row[3],
+                'depth': row[4]
+            })
+        return results
+
+    def list_activities_with_codes(
+        self, 
+        conn: sqlite3.Connection, 
+        proj_id: int,
+        wbs_id: int | None = None,
+        include_codes: bool = True,
+        limit: int = 100
+    ) -> list[dict]:
+        """
+        Lists activities in a project with their activity codes.
+        
+        Args:
+            conn: Database connection
+            proj_id: Project ID
+            wbs_id: Optional WBS ID to filter (includes nested WBS)
+            include_codes: If True, include activity code assignments
+            limit: Maximum number of activities to return
+            
+        Returns:
+            List of activities with their details and activity codes
+        """
+        cursor = conn.cursor()
+        
+        # Build base query with WBS path
+        if wbs_id:
+            # Get activities under the specified WBS (including nested)
+            sql = """
+                WITH RECURSIVE WBS_TREE(WBS_ID) AS (
+                    SELECT WBS_ID FROM PROJWBS WHERE WBS_ID = ? AND PROJ_ID = ?
+                    UNION ALL
+                    SELECT w.WBS_ID FROM PROJWBS w
+                    JOIN WBS_TREE wt ON w.PARENT_WBS_ID = wt.WBS_ID
+                    WHERE w.PROJ_ID = ?
+                ),
+                WBS_PATH_CTE(WBS_ID, PATH_NAME) AS (
+                    SELECT WBS_ID, WBS_SHORT_NAME
+                    FROM PROJWBS
+                    WHERE PROJ_ID = ? AND PROJ_NODE_FLAG = 'Y'
+                    UNION ALL
+                    SELECT w.WBS_ID, wp.PATH_NAME || '.' || w.WBS_SHORT_NAME
+                    FROM PROJWBS w
+                    JOIN WBS_PATH_CTE wp ON w.PARENT_WBS_ID = wp.WBS_ID
+                    WHERE w.PROJ_ID = ?
+                )
+                SELECT t.TASK_ID, t.TASK_CODE, t.TASK_NAME, t.STATUS_CODE,
+                       t.TARGET_START_DATE, t.TARGET_END_DATE,
+                       t.TARGET_DRTN_HR_CNT, t.PHYS_COMPLETE_PCT,
+                       COALESCE(wp.PATH_NAME, 'Unknown') as WBS_PATH
+                FROM TASK t
+                LEFT JOIN WBS_PATH_CTE wp ON t.WBS_ID = wp.WBS_ID
+                WHERE t.WBS_ID IN (SELECT WBS_ID FROM WBS_TREE)
+                AND t.DELETE_SESSION_ID IS NULL
+                ORDER BY wp.PATH_NAME, t.TASK_CODE
+                LIMIT ?
+            """
+            cursor.execute(sql, (wbs_id, proj_id, proj_id, proj_id, proj_id, limit))
+        else:
+            # Get all activities in the project
+            sql = """
+                WITH RECURSIVE WBS_PATH_CTE(WBS_ID, PATH_NAME) AS (
+                    SELECT WBS_ID, WBS_SHORT_NAME
+                    FROM PROJWBS
+                    WHERE PROJ_ID = ? AND PROJ_NODE_FLAG = 'Y'
+                    UNION ALL
+                    SELECT w.WBS_ID, wp.PATH_NAME || '.' || w.WBS_SHORT_NAME
+                    FROM PROJWBS w
+                    JOIN WBS_PATH_CTE wp ON w.PARENT_WBS_ID = wp.WBS_ID
+                    WHERE w.PROJ_ID = ?
+                )
+                SELECT t.TASK_ID, t.TASK_CODE, t.TASK_NAME, t.STATUS_CODE,
+                       t.TARGET_START_DATE, t.TARGET_END_DATE,
+                       t.TARGET_DRTN_HR_CNT, t.PHYS_COMPLETE_PCT,
+                       COALESCE(wp.PATH_NAME, 'Unknown') as WBS_PATH
+                FROM TASK t
+                LEFT JOIN WBS_PATH_CTE wp ON t.WBS_ID = wp.WBS_ID
+                WHERE t.PROJ_ID = ? AND t.DELETE_SESSION_ID IS NULL
+                ORDER BY wp.PATH_NAME, t.TASK_CODE
+                LIMIT ?
+            """
+            cursor.execute(sql, (proj_id, proj_id, proj_id, limit))
+        
+        columns = ['task_id', 'task_code', 'task_name', 'status_code', 
+                   'target_start_date', 'target_end_date', 
+                   'duration_hrs', 'phys_complete_pct', 'wbs_path']
+        
+        activities = []
+        for row in cursor.fetchall():
+            activity = dict(zip(columns, row))
+            
+            # Add activity codes if requested
+            if include_codes:
+                activity['activity_codes'] = self.get_task_activity_codes(conn, activity['task_id'])
+            else:
+                activity['activity_codes'] = []
+            
+            activities.append(activity)
+        
+        return activities

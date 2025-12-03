@@ -13,6 +13,7 @@ from backend.models.io import (
     RemoveActivityCodeRequest,
     BulkAssignActivityCodeRequest,
     GetActivityCurrentCodesRequest,
+    ListActivitiesRequest,
 )
 from backend.models.domain import P6Activity, P6Relationship
 from backend.utils.db import get_db_connection
@@ -347,6 +348,65 @@ class SchedulingService:
             include_project_codes=req.include_project_codes,
             proj_id=req.proj_id
         )
+
+    def list_activities(self, req: ListActivitiesRequest, conn=None) -> dict:
+        """
+        Lists activities in a project with their activity codes.
+        
+        Supports filtering by WBS name (partial match) or WBS ID.
+        
+        Returns:
+            Dict with activities list and metadata
+        """
+        if conn:
+            return self._list_activities_impl(conn, req)
+        
+        with get_db_connection() as direct_conn:
+            return self._list_activities_impl(direct_conn, req)
+    
+    def _list_activities_impl(self, conn, req: ListActivitiesRequest) -> dict:
+        """Implementation for list_activities."""
+        wbs_id = req.wbs_id
+        wbs_info = None
+        
+        # If wbs_name is provided, resolve it to wbs_id
+        if req.wbs_name and not req.wbs_id:
+            matching_wbs = self.repo.find_wbs_by_name(conn, req.wbs_name, req.proj_id)
+            
+            if not matching_wbs:
+                raise ValueError(f"No WBS found matching '{req.wbs_name}' in project {req.proj_id}")
+            
+            if len(matching_wbs) > 1:
+                # Multiple matches - return info about matches for user to clarify
+                wbs_options = [
+                    f"{w['wbs_path']} (ID: {w['wbs_id']}, Name: {w['wbs_name']})"
+                    for w in matching_wbs[:10]
+                ]
+                raise ValueError(
+                    f"Multiple WBS elements match '{req.wbs_name}'. Please be more specific or use wbs_id:\n" +
+                    "\n".join(wbs_options)
+                )
+            
+            # Single match - use it
+            wbs_id = matching_wbs[0]['wbs_id']
+            wbs_info = matching_wbs[0]
+        
+        # Get activities
+        activities = self.repo.list_activities_with_codes(
+            conn,
+            req.proj_id,
+            wbs_id=wbs_id,
+            include_codes=req.include_activity_codes,
+            limit=req.limit
+        )
+        
+        return {
+            'activities': activities,
+            'count': len(activities),
+            'wbs_filter': wbs_info,
+            'proj_id': req.proj_id,
+            'truncated': len(activities) >= req.limit
+        }
 
     def get_activity_current_codes(
         self, 

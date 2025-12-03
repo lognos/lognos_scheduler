@@ -42,7 +42,7 @@ class AgentDeps:
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
-| **Activity** | `create_activity_tool`, `get_activity_details_tool`, `update_activity_status_tool`, `update_progress_tool` | CRUD operations on activities |
+| **Activity** | `create_activity_tool`, `get_activity_details_tool`, `update_activity_status_tool`, `update_progress_tool`, `list_activities_tool` | CRUD operations on activities |
 | **Relationship** | `create_relationship_tool`, `update_relationship_tool`, `delete_relationship_tool` | Manage predecessor/successor links |
 | **Project** | `create_project_tool`, `list_projects_tool` | Create and list projects |
 | **Activity Codes** | `list_activity_codes_tool`, `get_activity_current_codes_tool`, `assign_activity_codes_tool`, `remove_activity_codes_tool`, `bulk_assign_activity_codes_tool` | Manage activity code assignments |
@@ -153,6 +153,70 @@ Updates the physical % complete of an activity.
 - `phys_complete_pct` must be between 0 and 100
 - If 100%, an `actual_finish` date is typically expected
 - If > 0%, activity should have started (status becomes TK_Active)
+
+---
+
+### list_activities_tool
+
+Lists activities in a project with their details and activity code assignments. Supports filtering by WBS.
+
+**Request Model: `ListActivitiesRequest`**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `proj_id` | `int` | Yes | - | Project ID to list activities from |
+| `wbs_name` | `str` | No | `None` | Filter by WBS name (partial match). E.g., "FOUNDATION" or "PHASE1.CIVIL" |
+| `wbs_id` | `int` | No | `None` | Filter by exact WBS ID. Lists activities under this WBS (including nested) |
+| `include_activity_codes` | `bool` | No | `True` | Include activity code assignments for each activity |
+| `limit` | `int` | No | `100` | Maximum number of activities to return |
+
+**Returns:** Formatted table with activities and their codes:
+```
+Activities under WBS: PROJECT.PHASE1.FOUNDATION (Foundation Works)
+Showing 15 activities
+
+Task Code   Task Name                           Status     Duration   %Comp PHASE  DISCIPLINE
+--------------------------------------------------------------------------------------------
+A1000       Site Preparation                    Complete   2.0d       100%  CON    CIV
+A1010       Excavation                          Active     5.0d       60%   CON    CIV
+A1020       Pour Foundation                     Not Start  3.0d       0%    -      -
+...
+
+Total: 15 activities
+
+Activities without activity codes (2):
+A1020, A1025
+```
+
+**WBS Filtering Behavior:**
+- If `wbs_name` matches multiple WBS elements, the tool returns options to clarify
+- If `wbs_id` is provided, it takes precedence over `wbs_name`
+- WBS filtering includes all nested WBS elements under the specified WBS
+
+**Example - List by WBS Name:**
+```python
+req = ListActivitiesRequest(
+    proj_id=1011,
+    wbs_name="FOUNDATION"
+)
+```
+
+**Example - List by WBS ID:**
+```python
+req = ListActivitiesRequest(
+    proj_id=1011,
+    wbs_id=12345,
+    include_activity_codes=True
+)
+```
+
+**Example - List All Activities:**
+```python
+req = ListActivitiesRequest(
+    proj_id=1011,
+    limit=200
+)
+```
 
 ---
 

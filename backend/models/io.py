@@ -273,3 +273,29 @@ class GetActivityCurrentCodesRequest(BaseModel):
         ..., 
         description="Project ID containing the activities"
     )
+
+
+class ListActivitiesRequest(BaseModel):
+    """Request to list activities in a project, optionally filtered by WBS."""
+    model_config = ConfigDict(strict=True)
+    
+    proj_id: int = Field(
+        ..., 
+        description="Project ID to list activities from"
+    )
+    wbs_name: StrictStr | None = Field(
+        default=None,
+        description="Filter by WBS name (WBS_SHORT_NAME). Use partial match. E.g., 'FOUNDATION' or 'PHASE1.CIVIL'"
+    )
+    wbs_id: int | None = Field(
+        default=None,
+        description="Filter by WBS ID. If provided, lists activities under this WBS (including nested WBS)."
+    )
+    include_activity_codes: bool = Field(
+        default=True,
+        description="If True (default), include activity code assignments for each activity."
+    )
+    limit: int = Field(
+        default=100,
+        description="Maximum number of activities to return. Default 100."
+    )

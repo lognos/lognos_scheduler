@@ -22,6 +22,7 @@ from backend.models.io import (
     RemoveActivityCodeRequest,
     BulkAssignActivityCodeRequest,
     GetActivityCurrentCodesRequest,
+    ListActivitiesRequest,
 )
 
 
@@ -368,6 +369,154 @@ async def list_projects_tool(ctx: RunContext[AgentDeps], req: ListProjectsReques
     except Exception as e:
         logfire.error("Error in list_projects_tool", error=str(e))
         return f"Error listing projects: {str(e)}"
+
+
+@logfire.instrument("list_activities_tool")
+async def list_activities_tool(ctx: RunContext[AgentDeps], req: ListActivitiesRequest) -> str:
+    """List activities in a project, optionally filtered by WBS.
+    
+    Use this tool to:
+    - List all activities in a project
+    - List activities under a specific WBS element (by name or ID)
+    - Show activity codes assigned to each activity
+    
+    The tool returns a formatted table with activity details and their codes.
+    
+    Filtering by WBS:
+    - Use wbs_name for partial name matching (e.g., "FOUNDATION", "CIVIL")
+    - Use wbs_id if you know the exact WBS ID
+    - If wbs_name matches multiple WBS elements, you'll get options to clarify
+    
+    Args:
+        ctx: Runtime context with dependencies (service, connection).
+        req: Request containing:
+            - proj_id: Project ID (required)
+            - wbs_name: Filter by WBS name (partial match)
+            - wbs_id: Filter by exact WBS ID
+            - include_activity_codes: Include code assignments (default True)
+            - limit: Max activities to return (default 100)
+    
+    Returns:
+        Formatted table of activities with their codes and details.
+    """
+    try:
+        result = ctx.deps.service.list_activities(req, conn=ctx.deps.conn)
+        
+        activities = result['activities']
+        
+        if not activities:
+            if req.wbs_name:
+                return f"No activities found under WBS matching '{req.wbs_name}' in project {req.proj_id}."
+            elif req.wbs_id:
+                return f"No activities found under WBS ID {req.wbs_id} in project {req.proj_id}."
+            else:
+                return f"No activities found in project {req.proj_id}."
+        
+        # Build formatted output
+        lines = []
+        
+        # Header with filter info
+        if result['wbs_filter']:
+            wbs_info = result['wbs_filter']
+            lines.append(f"Activities under WBS: {wbs_info['wbs_path']} ({wbs_info['wbs_name']})")
+        else:
+            lines.append(f"Activities in Project {req.proj_id}")
+        
+        lines.append(f"Showing {result['count']} activities" + (" (truncated)" if result['truncated'] else ""))
+        lines.append("")
+        
+        # Collect all unique code types across activities for table headers
+        code_types = set()
+        if req.include_activity_codes:
+            for act in activities:
+                for code in act.get('activity_codes', []):
+                    code_types.add(code['code_type_name'])
+        code_types_list = sorted(code_types)
+        
+        # Build table header
+        header_parts = ["Task Code", "Task Name", "Status", "Duration", "%Comp"]
+        header_parts.extend(code_types_list)
+        
+        # Calculate column widths
+        col_widths = {
+            "Task Code": 12,
+            "Task Name": 35,
+            "Status": 10,
+            "Duration": 10,
+            "%Comp": 6,
+        }
+        for ct in code_types_list:
+            col_widths[ct] = max(8, len(ct) + 2)
+        
+        # Format header
+        header = ""
+        for part in header_parts:
+            header += f"{part:<{col_widths.get(part, 10)}}"
+        lines.append(header)
+        lines.append("-" * len(header))
+        
+        # Format each activity
+        for act in activities:
+            task_code = act['task_code'] or '-'
+            task_name = act['task_name'] or '-'
+            if len(task_name) > 33:
+                task_name = task_name[:30] + '...'
+            
+            # Status mapping
+            status_map = {
+                'TK_NotStart': 'Not Start',
+                'TK_Active': 'Active',
+                'TK_Complete': 'Complete'
+            }
+            status = status_map.get(act['status_code'], act['status_code'] or '-')
+            
+            # Duration in days (assuming 8 hr workday)
+            duration_hrs = act.get('duration_hrs') or 0
+            duration_str = f"{duration_hrs/8:.1f}d" if duration_hrs else '-'
+            
+            # Percent complete
+            pct = act.get('phys_complete_pct')
+            pct_str = f"{pct:.0f}%" if pct is not None else '-'
+            
+            # Build row
+            row = f"{task_code:<{col_widths['Task Code']}}"
+            row += f"{task_name:<{col_widths['Task Name']}}"
+            row += f"{status:<{col_widths['Status']}}"
+            row += f"{duration_str:<{col_widths['Duration']}}"
+            row += f"{pct_str:<{col_widths['%Comp']}}"
+            
+            # Add activity codes
+            codes_by_type = {c['code_type_name']: c['short_name'] for c in act.get('activity_codes', [])}
+            for ct in code_types_list:
+                code_val = codes_by_type.get(ct, '-')
+                row += f"{code_val:<{col_widths[ct]}}"
+            
+            lines.append(row)
+        
+        # Summary
+        lines.append("")
+        lines.append(f"Total: {result['count']} activities")
+        
+        # Show activities without codes if any
+        if req.include_activity_codes:
+            activities_without_codes = [
+                a['task_code'] for a in activities 
+                if not a.get('activity_codes')
+            ]
+            if activities_without_codes:
+                lines.append("")
+                lines.append(f"Activities without activity codes ({len(activities_without_codes)}):")
+                lines.append(", ".join(activities_without_codes[:20]))
+                if len(activities_without_codes) > 20:
+                    lines.append(f"  ... and {len(activities_without_codes) - 20} more")
+        
+        return "\n".join(lines)
+    except ValueError as e:
+        # Could be WBS not found or multiple matches
+        return str(e)
+    except Exception as e:
+        logfire.error("Error in list_activities_tool", error=str(e))
+        return f"Error listing activities: {str(e)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
