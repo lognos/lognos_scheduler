@@ -6,9 +6,10 @@ This document outlines the implementation plan for adapting the copied `GanttCha
 
 **Key Deliverables:**
 1. NetworkX-based schedule calculator (backend)
-2. Adapted GanttChart component (frontend)
+2. Adapted GanttChart component (frontend) with floating panel UI
 3. Agent tool integration for schedule visualization
 4. Real-time Gantt updates via AG-UI streaming
+5. Filtering capabilities for partial schedule views
 
 **Primary Use Cases:**
 - **(a)** Visualize existing schedules loaded from P6 database
@@ -22,6 +23,8 @@ This document outlines the implementation plan for adapting the copied `GanttCha
 ## 2. Current State Analysis
 
 ### 2.1 GanttChart Component (`frontend/components/GanttChart.tsx`)
+
+**UI Requirement:** The GanttChart should appear as a **floating panel on the right side** of the chat interface, triggered only when schedule visualization is needed. The chat area should resize/shift left to accommodate the Gantt panel.
 
 The original app uses the following data structure:
 
@@ -81,6 +84,65 @@ export interface ScheduleItem {
 | `DAY_HR_CNT` | Hours per day |
 | `WEEK_HR_CNT` | Hours per week |
 
+#### Activity Codes System (PRIMARY Filter Mechanism)
+
+Activity Codes are the **primary mechanism** for filtering schedule views. Each activity can have multiple codes assigned (one per code type).
+
+**P6 Tables:**
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `ACTVTYPE` | Code type definitions | `ACTV_CODE_TYPE_ID`, `ACTV_CODE_TYPE` (name), `ACTV_CODE_TYPE_SCOPE` |
+| `ACTVCODE` | Code values (hierarchical) | `ACTV_CODE_ID`, `ACTV_CODE_TYPE_ID`, `PARENT_ACTV_CODE_ID`, `ACTV_CODE_NAME` |
+| `TASKACTV` | Task-to-code assignments | `TASK_ID`, `ACTV_CODE_TYPE_ID`, `ACTV_CODE_ID` |
+
+**Example Structure:**
+```
+Code Type: "Phase"
+├── Design
+├── Construction
+│   ├── Civil (child)
+│   ├── Mechanical (child)
+│   └── Electrical (child)
+└── Commissioning
+
+Code Type: "Area"
+├── Building A
+├── Building B
+└── Site Work
+```
+
+**Assignment Rule:** Each activity can have **ONE code value per code type**. An activity might have:
+- Phase = "Construction" (specifically "Civil")
+- Area = "Building A"
+- Responsibility = "Contractor ABC"
+
+**SQL to Load Activity Codes for a Project:**
+```sql
+SELECT 
+    ta.TASK_ID,
+    ct.ACTV_CODE_TYPE as code_type_name,
+    cv.ACTV_CODE_NAME as code_value_name
+FROM TASKACTV ta
+JOIN ACTVTYPE ct ON ta.ACTV_CODE_TYPE_ID = ct.ACTV_CODE_TYPE_ID
+JOIN ACTVCODE cv ON ta.ACTV_CODE_ID = cv.ACTV_CODE_ID
+JOIN TASK t ON ta.TASK_ID = t.TASK_ID
+WHERE t.PROJ_ID = :project_id
+```
+
+**SQL to Get Available Code Types and Values:**
+```sql
+-- Get all code types (project-level + global)
+SELECT 
+    ct.ACTV_CODE_TYPE_ID,
+    ct.ACTV_CODE_TYPE as code_type_name,
+    cv.ACTV_CODE_NAME as code_value_name
+FROM ACTVTYPE ct
+JOIN ACTVCODE cv ON ct.ACTV_CODE_TYPE_ID = cv.ACTV_CODE_TYPE_ID
+WHERE ct.PROJ_ID = :project_id OR ct.PROJ_ID IS NULL
+ORDER BY ct.SEQ_NUM, cv.SEQ_NUM
+```
+
 ### 2.3 Existing Architecture
 
 ```
@@ -92,10 +154,14 @@ Agent Tools (p6_tools.py)
        ↓
 Agent (scheduling_agent.py)
        ↓
-AG-UI Stream → Frontend (GanttChart)
+AG-UI Stream → Frontend (GanttChart floating panel)
 ```
 
-**Key Insight:** The agent is the primary consumer of the network calculator - no REST API endpoint is needed. Data flows through AG-UI streaming directly to the frontend.
+**Key Insights:**
+1. The agent is the primary consumer of the network calculator - no REST API endpoint is needed
+2. Data flows through AG-UI streaming directly to the frontend
+3. The agent controls when the Gantt panel is shown/hidden via stream events
+4. The agent can filter data before streaming (partial views)
 
 ---
 
@@ -174,6 +240,20 @@ AG-UI Stream → Frontend (GanttChart)
                     │ GanttChart Component│
                     │ (real-time updates) │
                     └─────────────────────┘
+                              │
+                              ▼
+                    ┌─────────────────────┐
+                    │   Frontend Layout   │
+                    │                     │
+                    │ ┌───────┬─────────┐ │
+                    │ │ Chat  │ Gantt   │ │
+                    │ │ (left)│ (right) │ │
+                    │ │       │ floating│ │
+                    │ └───────┴─────────┘ │
+                    │                     │
+                    │ Panel visibility    │
+                    │ controlled by agent │
+                    └─────────────────────┘
 ```
 
 ### 3.3 Working State Pattern (DataFrame as Session State)
@@ -223,10 +303,19 @@ Agent → Save DataFrame to P6 Database (using existing tools)
    ├── Float calculation
    └── Critical path identification
 
-5. STREAM: Calculated results → AG-UI → GanttChart
+5. FILTER (optional): Apply view filters
+   ├── By Activity Codes (PRIMARY - Phase, Area, Responsibility, etc.)
+   ├── By WBS path (show specific branch)
+   ├── By date range (activities in window)
+   ├── By critical path only
+   ├── By activity status
+   └── By search term (name/code match)
+
+6. STREAM: Filtered results → AG-UI → GanttChart
+   ├── Include panel visibility command (show/hide)
    └── Frontend receives ScheduleItem[] and re-renders
 
-6. PERSIST (on user approval):
+7. PERSIST (on user approval):
    └── Save DataFrame to P6 Database using existing tools
 ```
 
@@ -400,6 +489,44 @@ export interface GanttChartData {
   project_finish: string;
   critical_path_length?: number;
   data_date?: string;
+  filter_applied?: GanttFilter;  // Indicates what filter is active
+  total_activities?: number;     // Total before filtering
+  
+  // Available Activity Code types and values for filter UI
+  // Populated on initial load from P6 ACTVTYPE/ACTVCODE tables
+  available_activity_codes?: Record<string, string[]>;
+}
+
+/**
+ * Filter options for partial schedule views
+ * 
+ * Activity Codes are the PRIMARY filter mechanism.
+ * Each activity can have multiple codes (one per code type).
+ * P6 Structure: ACTVTYPE (types) → ACTVCODE (values) → TASKACTV (assignments)
+ */
+export interface GanttFilter {
+  wbs_path?: string;           // Show activities under this WBS
+  date_start?: string;         // Activities starting on or after
+  date_end?: string;           // Activities finishing on or before
+  critical_only?: boolean;     // Only critical path activities
+  status?: ('not_started' | 'active' | 'complete')[];
+  search_term?: string;        // Match in task_code or task_name
+  
+  // Activity Code filters (PRIMARY filtering mechanism)
+  // Key = Code Type name (e.g., "Phase", "Area", "Responsibility")
+  // Value = Array of Code Values to include (e.g., ["Construction", "Commissioning"])
+  // Activities must match ALL specified code types (AND logic between types)
+  // Within a code type, activities matching ANY value are included (OR logic within type)
+  activity_codes?: Record<string, string[]>;
+}
+
+/**
+ * AG-UI event to control Gantt panel visibility
+ */
+export interface GanttPanelEvent {
+  type: 'gantt_panel';
+  action: 'show' | 'hide' | 'update';
+  data?: GanttChartData;
 }
 ```
 
@@ -464,13 +591,46 @@ async def add_activity_to_workspace(
 
 @agent.tool
 async def calculate_and_display_gantt(
-    ctx: RunContext[AgentDependencies]
+    ctx: RunContext[AgentDependencies],
+    filter_wbs: str | None = None,
+    filter_date_start: str | None = None,
+    filter_date_end: str | None = None,
+    filter_critical_only: bool = False,
+    filter_status: list[str] | None = None,
+    filter_search: str | None = None,
+    filter_activity_codes: dict[str, list[str]] | None = None
 ) -> GanttDisplayResult:
     """
     Recalculate CPM and stream Gantt chart to frontend.
     
     Called automatically after modifications, or manually
     when user wants to see current state.
+    
+    Filtering options allow partial views:
+    - filter_wbs: Show only activities under this WBS path
+    - filter_date_start/end: Show activities in date range
+    - filter_critical_only: Show only critical path
+    - filter_status: Filter by status (not_started, active, complete)
+    - filter_search: Match task code or name
+    - filter_activity_codes: PRIMARY filter - dict of code_type → code_values
+      Example: {"Phase": ["Construction"], "Area": ["Building A", "Building B"]}
+      Logic: AND between types, OR within a type
+    
+    Sends 'gantt_panel' event with action='show' to display panel.
+    """
+    ...
+
+@agent.tool
+async def hide_gantt_panel(
+    ctx: RunContext[AgentDependencies]
+) -> None:
+    """
+    Hide the Gantt panel from the UI.
+    
+    Called when user is done reviewing the schedule or
+    switches to a different topic.
+    
+    Sends 'gantt_panel' event with action='hide'.
     """
     ...
 
@@ -503,11 +663,24 @@ class ScheduleWorkspace:
     In-memory working state for a schedule being edited.
     
     Maintains DataFrame + metadata per conversation session.
+    
+    Activity Codes are loaded from P6 tables:
+    - ACTVTYPE: Code type definitions (Phase, Area, Responsibility, etc.)
+    - ACTVCODE: Code values (hierarchical, e.g., Construction → Civil)
+    - TASKACTV: Code assignments to tasks (one value per code type per task)
     """
     conversation_id: str
     project_id: str | None = None  # None if creating new schedule
     activities_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationships_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+    
+    # Activity Code data (loaded from P6)
+    # activity_codes_df: task_id → code_type_name → code_value_name
+    # Flattened view of TASKACTV joined with ACTVTYPE and ACTVCODE
+    activity_codes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Available code types and their values for UI filter options
+    code_types_with_values: dict[str, list[str]] = field(default_factory=dict)
+    
     is_modified: bool = False
     source: str = "new"  # "new" | "p6_loaded"
     created_at: datetime = field(default_factory=datetime.now)
@@ -516,6 +689,74 @@ class ScheduleWorkspace:
     def mark_modified(self) -> None:
         self.is_modified = True
         self.updated_at = datetime.now()
+    
+    def filter_activities(
+        self,
+        wbs_path: str | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
+        critical_only: bool = False,
+        status: list[str] | None = None,
+        search_term: str | None = None,
+        activity_codes: dict[str, list[str]] | None = None
+    ) -> pd.DataFrame:
+        """
+        Return filtered view of activities DataFrame.
+        
+        Does not modify the underlying data - returns a filtered copy.
+        
+        Activity Code filtering (PRIMARY mechanism):
+        - activity_codes is a dict: code_type_name → list of code_value_names
+        - Example: {"Phase": ["Construction"], "Area": ["Building A", "Building B"]}
+        - Logic: AND between code types, OR within a code type
+        - Above example: Phase=Construction AND (Area=Building A OR Area=Building B)
+        """
+        df = self.activities_df.copy()
+        
+        # Activity Code filter (PRIMARY - filter first for efficiency)
+        if activity_codes and not self.activity_codes_df.empty:
+            # Build set of task_ids that match the Activity Code criteria
+            matching_task_ids = None
+            
+            for code_type, code_values in activity_codes.items():
+                # Find tasks that have any of the specified values for this code type
+                type_matches = self.activity_codes_df[
+                    (self.activity_codes_df['code_type_name'] == code_type) &
+                    (self.activity_codes_df['code_value_name'].isin(code_values))
+                ]['task_id'].unique()
+                
+                if matching_task_ids is None:
+                    matching_task_ids = set(type_matches)
+                else:
+                    # AND logic: intersect with previous code type matches
+                    matching_task_ids = matching_task_ids & set(type_matches)
+            
+            if matching_task_ids is not None:
+                df = df[df['task_id'].isin(matching_task_ids)]
+        
+        if wbs_path:
+            df = df[df['wbs_path'].str.startswith(wbs_path)]
+        
+        if date_start:
+            df = df[df['early_start'] >= date_start]
+        
+        if date_end:
+            df = df[df['early_finish'] <= date_end]
+        
+        if critical_only:
+            df = df[df['is_critical'] == True]
+        
+        if status:
+            df = df[df['status'].isin(status)]
+        
+        if search_term:
+            mask = (
+                df['task_code'].str.contains(search_term, case=False, na=False) |
+                df['task_name'].str.contains(search_term, case=False, na=False)
+            )
+            df = df[mask]
+        
+        return df
 
 
 class ScheduleStateManager:
@@ -541,13 +782,30 @@ class ScheduleStateManager:
         conversation_id: str,
         project_id: str,
         activities_df: pd.DataFrame,
-        relationships_df: pd.DataFrame
+        relationships_df: pd.DataFrame,
+        activity_codes_df: pd.DataFrame | None = None,
+        code_types_with_values: dict[str, list[str]] | None = None
     ) -> ScheduleWorkspace:
+        """
+        Load schedule data from P6 including Activity Codes.
+        
+        activity_codes_df expected columns:
+        - task_id: int
+        - code_type_name: str (e.g., "Phase", "Area")
+        - code_value_name: str (e.g., "Construction", "Building A")
+        
+        code_types_with_values: dict of available code types and their values
+        - Used by frontend to populate filter dropdowns
+        - Example: {"Phase": ["Design", "Construction", "Closeout"],
+                   "Area": ["Building A", "Building B"]}
+        """
         workspace = ScheduleWorkspace(
             conversation_id=conversation_id,
             project_id=project_id,
             activities_df=activities_df,
             relationships_df=relationships_df,
+            activity_codes_df=activity_codes_df if activity_codes_df is not None else pd.DataFrame(),
+            code_types_with_values=code_types_with_values or {},
             source="p6_loaded"
         )
         self._workspaces[conversation_id] = workspace
@@ -559,7 +817,141 @@ class ScheduleStateManager:
 
 ---
 
-## 5. Implementation Phases
+## 5. UI Layout: Floating Gantt Panel
+
+### 5.1 Layout Behavior
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                           Header                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  DEFAULT STATE (no Gantt):                                           │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │                                                                │  │
+│  │                        Chat Area                               │  │
+│  │                      (full width)                              │  │
+│  │                                                                │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  WITH GANTT PANEL (triggered by agent):                              │
+│  ┌─────────────────────────┬──────────────────────────────────────┐  │
+│  │                         │                                      │  │
+│  │      Chat Area          │         Gantt Panel                  │  │
+│  │    (resized left)       │     (floating right)                 │  │
+│  │                         │                                      │  │
+│  │                         │  ┌──────────────────────────────┐   │  │
+│  │                         │  │ [x] Close  Filter: WBS/A     │   │  │
+│  │                         │  ├──────────────────────────────┤   │  │
+│  │                         │  │                              │   │  │
+│  │                         │  │      Gantt Chart             │   │  │
+│  │                         │  │                              │   │  │
+│  │                         │  │  ████████░░░░ Activity A     │   │  │
+│  │                         │  │       ████████ Activity B    │   │  │
+│  │                         │  │            ██████ Activity C │   │  │
+│  │                         │  │                              │   │  │
+│  │                         │  └──────────────────────────────┘   │  │
+│  │                         │                                      │  │
+│  └─────────────────────────┴──────────────────────────────────────┘  │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.2 Panel Visibility States
+
+| State | Trigger | Chat Width | Gantt Width |
+|-------|---------|------------|-------------|
+| Hidden | Default / `hide_gantt_panel` | 100% | 0 |
+| Visible | `calculate_and_display_gantt` | ~50-60% | ~40-50% |
+
+### 5.3 AG-UI Events for Panel Control
+
+```typescript
+// Event types streamed from agent to frontend
+
+// Show panel with data
+{
+  type: 'gantt_panel',
+  action: 'show',
+  data: {
+    items: ScheduleItem[],
+    project_start: '2025-01-01',
+    project_finish: '2025-06-30',
+    filter_applied: { wbs_path: 'WBS/A' },
+    total_activities: 100  // 100 total, showing filtered subset
+  }
+}
+
+// Update panel data (panel already visible)
+{
+  type: 'gantt_panel',
+  action: 'update',
+  data: { ... }
+}
+
+// Hide panel
+{
+  type: 'gantt_panel',
+  action: 'hide'
+}
+```
+
+### 5.4 Frontend Component Structure
+
+```
+ChatLayout.tsx (modified)
+├── ChatArea (resizable based on ganttVisible state)
+│   └── MessageList, InputArea, etc.
+│
+└── GanttPanel (conditional render)
+    ├── PanelHeader
+    │   ├── Close button (triggers hide)
+    │   └── Filter indicator (shows active filter)
+    │
+    └── GanttChart (existing component, adapted)
+        └── Receives ScheduleItem[] from AG-UI stream
+```
+
+### 5.5 State Management (Frontend)
+
+```typescript
+// In ChatLayout or context provider
+
+interface GanttPanelState {
+  visible: boolean;
+  data: GanttChartData | null;
+  filterApplied: GanttFilter | null;
+}
+
+// AG-UI stream handler
+const handleGanttEvent = (event: GanttPanelEvent) => {
+  switch (event.action) {
+    case 'show':
+      setGanttState({
+        visible: true,
+        data: event.data,
+        filterApplied: event.data?.filter_applied || null
+      });
+      break;
+    case 'update':
+      setGanttState(prev => ({
+        ...prev,
+        data: event.data,
+        filterApplied: event.data?.filter_applied || null
+      }));
+      break;
+    case 'hide':
+      setGanttState({ visible: false, data: null, filterApplied: null });
+      break;
+  }
+};
+```
+
+---
+
+## 6. Implementation Phases
 
 ### Phase 1: Core NetworkX Calculator (Backend)
 - [ ] Create `network_calculator.py` with basic CPM
@@ -571,6 +963,7 @@ class ScheduleStateManager:
 ### Phase 2: Schedule State Management
 - [ ] Create `schedule_state.py` with ScheduleWorkspace
 - [ ] Implement ScheduleStateManager for conversation-scoped state
+- [ ] Implement `filter_activities()` method for partial views
 - [ ] Load from P6 functionality
 - [ ] Modify/add activity functionality
 
@@ -578,14 +971,19 @@ class ScheduleStateManager:
 - [ ] Implement `load_schedule_to_workspace` tool
 - [ ] Implement `modify_activity_in_workspace` tool
 - [ ] Implement `add_activity_to_workspace` tool
-- [ ] Implement `calculate_and_display_gantt` tool
+- [ ] Implement `calculate_and_display_gantt` tool with filtering params
+- [ ] Implement `hide_gantt_panel` tool
 - [ ] Implement `save_workspace_to_p6` tool
-- [ ] AG-UI streaming for Gantt data (artifact type)
+- [ ] AG-UI streaming for Gantt data (`gantt_panel` event type)
 
 ### Phase 4: Frontend Integration
 - [ ] Create `ScheduleItem` type definition
 - [ ] Adapt `GanttChart.tsx` for P6 data structure
+- [ ] Create floating panel layout (chat left, Gantt right)
+- [ ] Handle `gantt_panel` events (show/hide/update)
+- [ ] Implement responsive layout transition (chat resize)
 - [ ] Handle AG-UI stream updates for real-time rendering
+- [ ] Display filter indicator when partial view is active
 - [ ] Add critical path highlighting (optional)
 
 ### Phase 5: Enhanced Relationships (Post-MVP)
@@ -595,7 +993,7 @@ class ScheduleStateManager:
 
 ---
 
-## 6. Gantt Interactivity (Future Phase - NOT in MVP)
+## 7. Gantt Interactivity (Future Phase - NOT in MVP)
 
 For reference, enabling direct Gantt manipulation would require:
 
@@ -613,28 +1011,72 @@ For MVP, the Gantt is **read-only** - users interact via chat, agent updates the
 
 ---
 
-## 7. Testing Strategy
+## 8. Testing Strategy
 
 ### Unit Tests
 - NetworkX graph building
 - CPM forward/backward pass
 - Float calculation
 - "Start On or After" constraint application
+- DataFrame filtering methods
 
 ### Integration Tests
 - End-to-end with P6 database (~100 activities)
 - Agent tool execution
 - AG-UI stream data format
+- Panel show/hide events
 
 ### Sample Test Cases
 1. Simple linear schedule (A → B → C)
 2. Parallel paths with merge
 3. Activity with "Start On or After" constraint
 4. Incomplete network (missing predecessors - should warn)
+5. Filter by WBS path (show subset)
+6. Filter by critical path only
+7. Filter by search term
+8. Panel visibility toggle
+9. Filter by single Activity Code type (Phase = Construction)
+10. Filter by multiple Activity Code types (Phase = Construction AND Area = Building A)
+11. Filter by Activity Code with multiple values (Area = Building A OR Building B)
+12. Load Activity Codes from P6 (TASKACTV join)
+
+### Example User Interactions
+```
+User: "Show me the schedule for Project X"
+Agent: [loads from P6] → [calculates] → [streams gantt_panel show]
+       Panel appears on right, chat resizes
+       (includes available_activity_codes for filter dropdowns)
+
+User: "Just show me the foundation work"
+Agent: [filters by WBS 'Foundation'] → [streams gantt_panel update]
+       Panel updates with filtered view, shows "Filter: WBS/Foundation"
+
+User: "Show me all Construction phase activities in Building A"
+Agent: [filters by activity_codes: {Phase: ["Construction"], Area: ["Building A"]}]
+       → [streams gantt_panel update]
+       Panel shows filtered view: "Filter: Phase=Construction, Area=Building A"
+
+User: "Include Building B as well"
+Agent: [filters by activity_codes: {Phase: ["Construction"], Area: ["Building A", "Building B"]}]
+       → [streams gantt_panel update]
+       Panel shows expanded view: "Filter: Phase=Construction, Area=Building A or Building B"
+
+User: "What's on the critical path?"
+Agent: [filters critical_only=true] → [streams gantt_panel update]
+       Panel shows only critical activities
+
+User: "Add a new activity after A1020"
+Agent: [modifies DataFrame] → [recalculates] → [streams gantt_panel update]
+       Panel updates with new activity shown
+
+User: "Thanks, I'm done reviewing"
+Agent: [streams gantt_panel hide]
+       Panel closes, chat expands to full width
+```
 
 ---
 
-## 8. Risks and Mitigations
+## 9. Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
@@ -644,7 +1086,7 @@ For MVP, the Gantt is **read-only** - users interact via chat, agent updates the
 
 ---
 
-## 9. Open Questions - RESOLVED
+## 10. Open Questions - RESOLVED
 
 | Question | Resolution |
 |----------|------------|
@@ -654,10 +1096,12 @@ For MVP, the Gantt is **read-only** - users interact via chat, agent updates the
 | Data volume | ~100 activities (trivial for NetworkX) |
 | Real-time updates | Key feature - AG-UI streaming after each modification |
 | API endpoint needed? | No - agent is the consumer, data flows via AG-UI |
+| UI layout | Floating panel on right, chat resizes left |
+| Partial views | Filtering by WBS, date, critical path, status, search |
 
 ---
 
-## 10. Dependencies
+## 11. Dependencies
 
 ### Python Packages (to add to requirements.txt)
 ```
@@ -670,20 +1114,20 @@ pandas>=2.0
 
 ---
 
-## 11. Estimated Effort (Revised)
+## 12. Estimated Effort (Revised)
 
 | Phase | Estimated Days |
 |-------|----------------|
 | Phase 1: Core Calculator | 2-3 days |
-| Phase 2: State Management | 1-2 days |
+| Phase 2: State Management + Filtering | 1-2 days |
 | Phase 3: Agent Tools & AG-UI | 2-3 days |
-| Phase 4: Frontend | 1-2 days |
+| Phase 4: Frontend (incl. panel layout) | 2-3 days |
 
-**Total MVP (Phases 1-4):** 6-10 days
+**Total MVP (Phases 1-4):** 7-11 days
 
 ---
 
-## 12. Approval Checklist
+## 13. Approval Checklist
 
 Before implementation, please confirm:
 
@@ -694,6 +1138,9 @@ Before implementation, please confirm:
 - [x] Read-only Gantt (no direct manipulation) is acceptable
 - [x] Real-time updates via AG-UI streaming is the approach
 - [x] No separate REST API endpoint needed
+- [x] Floating panel UI (right side, chat resizes)
+- [x] Filtering/partial view capability included
+- [x] Activity Codes as PRIMARY filter mechanism
 - [ ] Phase breakdown aligns with priorities
 - [ ] Type definitions match expectations
 
@@ -701,4 +1148,4 @@ Before implementation, please confirm:
 
 *Document created: December 3, 2025*
 *Author: GitHub Copilot*
-*Status: REVISED - AWAITING FINAL APPROVAL*
+*Status: REVISED (v3) - Activity Code filtering added - AWAITING FINAL APPROVAL*
