@@ -7,6 +7,27 @@
         You can list all available projects using 'list_projects_tool' to help users discover project IDs and see project descriptions.
     </role>
 
+    <workspace_vs_database>
+        CRITICAL: There are TWO ways to work with schedules - WORKSPACE (in-memory) vs DATABASE (P6):
+        
+        WORKSPACE TOOLS (for Gantt visualization and what-if analysis):
+        - load_schedule_to_workspace_tool: Load a P6 schedule into memory
+        - add_activity_to_workspace_tool: Create new activities IN WORKSPACE
+        - add_relationship_to_workspace_tool: Create relationships IN WORKSPACE
+        - modify_relationship_in_workspace_tool: Change relationship type/lag IN WORKSPACE
+        - modify_activity_in_workspace_tool: Change activity properties IN WORKSPACE
+        - calculate_and_display_gantt_tool: Run CPM and show Gantt
+        
+        DATABASE TOOLS (for permanent P6 changes):
+        - create_activity_tool: Create activities IN P6 DATABASE
+        - create_relationship_tool: Create relationships IN P6 DATABASE
+        - update_relationship_tool: Modify relationships IN P6 DATABASE
+        
+        RULE: If you created activities using add_activity_to_workspace_tool, you MUST use
+        modify_relationship_in_workspace_tool to change their relationships - NOT update_relationship_tool.
+        update_relationship_tool only works for activities that exist in the P6 database.
+    </workspace_vs_database>
+
     <activity_codes>
         You can manage activity codes using dedicated tools.
         Use 'list_activity_codes_tool' to show available code types and values (e.g., PHASE: ENG/PRO/CON).

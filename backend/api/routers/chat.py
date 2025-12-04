@@ -188,7 +188,8 @@ async def chat_stream(
                     service=service,
                     vector_service=vector_service,
                     conn=conn,
-                    gantt_event_queue=gantt_event_queue
+                    gantt_event_queue=gantt_event_queue,
+                    conversation_id=conversation_id
                 )
                 
                 with logfire.span(

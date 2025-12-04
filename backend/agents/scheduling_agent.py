@@ -25,6 +25,7 @@ from backend.tools.p6_tools import (
     modify_activity_in_workspace_tool,
     add_activity_to_workspace_tool,
     add_relationship_to_workspace_tool,
+    modify_relationship_in_workspace_tool,
     hide_gantt_panel_tool,
     get_workspace_status_tool,
     AgentDeps
@@ -35,7 +36,7 @@ from backend.config.settings import settings
 # Usage limits to pass at runtime (prevents runaway loops)
 SCHEDULING_USAGE_LIMITS = UsageLimits(
     request_limit=25,  # Maximum requests per run
-    input_tokens_limit=50_000,  # Input token limit
+    input_tokens_limit=100_000,  # Input token limit (Gemini 2.5 Flash supports 1M)
     output_tokens_limit=8_000,  # Output token limit
 )
 
@@ -73,6 +74,7 @@ scheduling_agent = Agent(
         modify_activity_in_workspace_tool,
         add_activity_to_workspace_tool,
         add_relationship_to_workspace_tool,
+        modify_relationship_in_workspace_tool,
         hide_gantt_panel_tool,
         get_workspace_status_tool,
     ],

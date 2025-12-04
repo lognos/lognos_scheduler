@@ -35,11 +35,13 @@ class AgentDeps:
         vector_service: Optional vector search service for semantic search.
         conn: Optional database connection for direct queries.
         gantt_event_queue: Queue for gantt panel events to be streamed to frontend.
+        conversation_id: Unique conversation ID for workspace isolation.
     """
     service: SchedulingService
     vector_service: Optional[VectorService] = None
     conn: Optional[object] = None
     gantt_event_queue: Optional[list] = None
+    conversation_id: Optional[str] = None
 
 @logfire.instrument("delete_relationship_tool")
 async def delete_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipDeleteRequest) -> str:
@@ -785,16 +787,12 @@ async def bulk_assign_activity_codes_tool(
 import pandas as pd
 from backend.services.schedule_state import schedule_state_manager, ScheduleWorkspace
 from backend.services.network_calculator import NetworkCalculator, CalculationResult, ScheduleValidationError
-from backend.models.io import (
-    LoadScheduleToWorkspaceRequest,
-    CalculateAndDisplayGanttRequest,
-)
 
 
 @logfire.instrument("load_schedule_to_workspace_tool")
 async def load_schedule_to_workspace_tool(
     ctx: RunContext[AgentDeps], 
-    req: LoadScheduleToWorkspaceRequest
+    proj_id: int
 ) -> str:
     """Load a P6 schedule into the working workspace for visualization and editing.
     
@@ -807,16 +805,18 @@ async def load_schedule_to_workspace_tool(
     After loading, use calculate_and_display_gantt_tool to show the Gantt chart.
     
     Args:
-        ctx: Runtime context with dependencies
-        req: Request containing proj_id and conversation_id
+        ctx: Runtime context with dependencies (includes conversation_id)
+        proj_id: P6 Project ID to load
     
     Returns:
         Summary of loaded schedule (activity count, relationship count, etc.)
     """
     try:
+        conversation_id = ctx.deps.conversation_id
+        
         # Load schedule data from P6
         schedule_data = ctx.deps.service.load_schedule_for_workspace(
-            req.proj_id, 
+            proj_id, 
             conn=ctx.deps.conn
         )
         
@@ -843,8 +843,8 @@ async def load_schedule_to_workspace_tool(
         
         # Load into workspace
         workspace = schedule_state_manager.load_from_p6(
-            conversation_id=req.conversation_id,
-            project_id=req.proj_id,
+            conversation_id=conversation_id,
+            project_id=proj_id,
             project_name=project_info.get('project_name', 'Unknown'),
             activities_df=activities_df,
             relationships_df=relationships_df,
@@ -869,7 +869,13 @@ async def load_schedule_to_workspace_tool(
 @logfire.instrument("calculate_and_display_gantt_tool")
 async def calculate_and_display_gantt_tool(
     ctx: RunContext[AgentDeps], 
-    req: CalculateAndDisplayGanttRequest
+    filter_activity_codes: dict[str, list[str]] | None = None,
+    filter_wbs: str | None = None,
+    filter_critical_only: bool = False,
+    filter_status: list[str] | None = None,
+    filter_search: str | None = None,
+    filter_date_start: str | None = None,
+    filter_date_end: str | None = None
 ) -> str:
     """Calculate CPM and display Gantt chart in the UI.
     
@@ -888,15 +894,23 @@ async def calculate_and_display_gantt_tool(
     - filter_date_start/end: Date range filter
     
     Args:
-        ctx: Runtime context with dependencies
-        req: Request with conversation_id and optional filter parameters
+        ctx: Runtime context with dependencies (includes conversation_id)
+        filter_activity_codes: Filter by activity codes dict
+        filter_wbs: Filter by WBS path
+        filter_critical_only: Show only critical activities
+        filter_status: Filter by status list
+        filter_search: Search in task code/name
+        filter_date_start: Filter activities starting after this date (ISO format)
+        filter_date_end: Filter activities ending before this date (ISO format)
     
     Returns:
         Summary of displayed schedule and filter applied
     """
     try:
+        conversation_id = ctx.deps.conversation_id
+        
         # Get workspace
-        workspace = schedule_state_manager.get(req.conversation_id)
+        workspace = schedule_state_manager.get(conversation_id)
         if not workspace:
             return "No schedule loaded. Use load_schedule_to_workspace_tool first."
         
@@ -937,13 +951,13 @@ async def calculate_and_display_gantt_tool(
         
         # Apply filters (ALL IN-MEMORY - no database queries)
         filtered_df = workspace.filter_activities(
-            wbs_path=req.filter_wbs,
-            date_start=req.filter_date_start,
-            date_end=req.filter_date_end,
-            critical_only=req.filter_critical_only,
-            status=req.filter_status,
-            search_term=req.filter_search,
-            activity_codes=req.filter_activity_codes
+            wbs_path=filter_wbs,
+            date_start=filter_date_start,
+            date_end=filter_date_end,
+            critical_only=filter_critical_only,
+            status=filter_status,
+            search_term=filter_search,
+            activity_codes=filter_activity_codes
         )
         
         # Build Gantt data for streaming
@@ -963,17 +977,17 @@ async def calculate_and_display_gantt_tool(
         
         # Build filter description
         filter_parts = []
-        if req.filter_activity_codes:
-            for code_type, values in req.filter_activity_codes.items():
+        if filter_activity_codes:
+            for code_type, values in filter_activity_codes.items():
                 filter_parts.append(f"{code_type}={' or '.join(values)}")
-        if req.filter_wbs:
-            filter_parts.append(f"WBS={req.filter_wbs}")
-        if req.filter_critical_only:
+        if filter_wbs:
+            filter_parts.append(f"WBS={filter_wbs}")
+        if filter_critical_only:
             filter_parts.append("Critical Path Only")
-        if req.filter_status:
-            filter_parts.append(f"Status={', '.join(req.filter_status)}")
-        if req.filter_search:
-            filter_parts.append(f"Search='{req.filter_search}'")
+        if filter_status:
+            filter_parts.append(f"Status={', '.join(filter_status)}")
+        if filter_search:
+            filter_parts.append(f"Search='{filter_search}'")
         
         filter_desc = " AND ".join(filter_parts) if filter_parts else "None"
         
@@ -988,11 +1002,11 @@ async def calculate_and_display_gantt_tool(
                 'project_finish': result.project_finish.isoformat(),
                 'critical_path_length': result.critical_path_length_days,
                 'filter_applied': {
-                    'wbs_path': req.filter_wbs,
-                    'critical_only': req.filter_critical_only,
-                    'activity_codes': req.filter_activity_codes,
-                    'status': req.filter_status,
-                    'search_term': req.filter_search,
+                    'wbs_path': filter_wbs,
+                    'critical_only': filter_critical_only,
+                    'activity_codes': filter_activity_codes,
+                    'status': filter_status,
+                    'search_term': filter_search,
                 },
                 'total_activities': workspace.get_activity_count(),
                 'filtered_activities': len(gantt_items),
@@ -1015,15 +1029,14 @@ async def calculate_and_display_gantt_tool(
 
 
 @logfire.instrument("hide_gantt_panel_tool")
-async def hide_gantt_panel_tool(ctx: RunContext[AgentDeps], conversation_id: str) -> str:
+async def hide_gantt_panel_tool(ctx: RunContext[AgentDeps]) -> str:
     """Hide the Gantt panel from the UI.
     
     Use this tool when the user is done reviewing the schedule or
     switches to a different topic.
     
     Args:
-        ctx: Runtime context
-        conversation_id: Conversation identifier
+        ctx: Runtime context with conversation_id in deps
     
     Returns:
         Confirmation message
@@ -1046,19 +1059,19 @@ async def hide_gantt_panel_tool(ctx: RunContext[AgentDeps], conversation_id: str
 
 
 @logfire.instrument("get_workspace_status_tool")
-async def get_workspace_status_tool(ctx: RunContext[AgentDeps], conversation_id: str) -> str:
+async def get_workspace_status_tool(ctx: RunContext[AgentDeps]) -> str:
     """Get the current status of the schedule workspace.
     
     Use this tool to check if a schedule is loaded and its current state.
     
     Args:
-        ctx: Runtime context
-        conversation_id: Conversation identifier
+        ctx: Runtime context with conversation_id in deps
     
     Returns:
         Workspace status summary
     """
     try:
+        conversation_id = ctx.deps.conversation_id
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
@@ -1080,7 +1093,6 @@ async def get_workspace_status_tool(ctx: RunContext[AgentDeps], conversation_id:
 @logfire.instrument("modify_activity_in_workspace_tool")
 async def modify_activity_in_workspace_tool(
     ctx: RunContext[AgentDeps],
-    conversation_id: str,
     task_id: int,
     original_duration: int | None = None,
     target_start_date: str | None = None,
@@ -1093,8 +1105,7 @@ async def modify_activity_in_workspace_tool(
     BEFORE running calculate_and_display_gantt to see the impact.
     
     Args:
-        ctx: Runtime context
-        conversation_id: Conversation identifier
+        ctx: Runtime context with conversation_id in deps
         task_id: Task ID of the activity to modify
         original_duration: New original duration in hours (optional)
         target_start_date: New target start date in ISO format (optional)
@@ -1105,6 +1116,7 @@ async def modify_activity_in_workspace_tool(
         Confirmation of changes made
     """
     try:
+        conversation_id = ctx.deps.conversation_id
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
@@ -1159,7 +1171,6 @@ async def modify_activity_in_workspace_tool(
 @logfire.instrument("add_activity_to_workspace_tool")
 async def add_activity_to_workspace_tool(
     ctx: RunContext[AgentDeps],
-    conversation_id: str,
     task_code: str,
     task_name: str,
     original_duration_hours: int,
@@ -1173,8 +1184,7 @@ async def add_activity_to_workspace_tool(
     and NOT saved to the database until explicitly requested.
     
     Args:
-        ctx: Runtime context
-        conversation_id: Conversation identifier
+        ctx: Runtime context with conversation_id in deps
         task_code: Unique activity code for the new activity
         task_name: Name of the new activity
         original_duration_hours: Duration in hours (e.g., 40 for 5 days)
@@ -1185,6 +1195,7 @@ async def add_activity_to_workspace_tool(
         Confirmation with the new task_id assigned
     """
     try:
+        conversation_id = ctx.deps.conversation_id
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
@@ -1229,8 +1240,8 @@ async def add_activity_to_workspace_tool(
         
         workspace.is_modified = True
         
-        # Minimal response to reduce token usage
-        return f"Added activity '{task_code}' ({task_name}, {original_duration_hours}h). Use add_relationship_to_workspace to connect it."
+        # Include task_id - LLM needs it for add_relationship_to_workspace
+        return f"Added '{task_code}' (task_id={new_task_id}, {original_duration_hours}h). Use task_id for relationships."
         
     except Exception as e:
         logfire.error("Error in add_activity_to_workspace_tool", error=str(e))
@@ -1240,7 +1251,6 @@ async def add_activity_to_workspace_tool(
 @logfire.instrument("add_relationship_to_workspace_tool")
 async def add_relationship_to_workspace_tool(
     ctx: RunContext[AgentDeps],
-    conversation_id: str,
     predecessor_task_id: int,
     successor_task_id: int,
     relationship_type: str = "FS",
@@ -1252,8 +1262,7 @@ async def add_relationship_to_workspace_tool(
     The relationship will be used in the next schedule calculation.
     
     Args:
-        ctx: Runtime context
-        conversation_id: Conversation identifier
+        ctx: Runtime context with conversation_id in deps
         predecessor_task_id: Task ID of the predecessor activity
         successor_task_id: Task ID of the successor activity
         relationship_type: FS (Finish-to-Start), SS, FF, or SF
@@ -1263,6 +1272,7 @@ async def add_relationship_to_workspace_tool(
         Confirmation of the relationship added
     """
     try:
+        conversation_id = ctx.deps.conversation_id
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
@@ -1327,3 +1337,90 @@ async def add_relationship_to_workspace_tool(
     except Exception as e:
         logfire.error("Error in add_relationship_to_workspace_tool", error=str(e))
         return f"Error adding relationship: {str(e)}"
+
+
+@logfire.instrument("modify_relationship_in_workspace_tool")
+async def modify_relationship_in_workspace_tool(
+    ctx: RunContext[AgentDeps],
+    predecessor_task_id: int,
+    successor_task_id: int,
+    new_relationship_type: str | None = None,
+    new_lag_hours: int | None = None
+) -> str:
+    """Modify an existing relationship in the workspace.
+    
+    Use this tool to change the relationship type or lag between activities
+    that are already linked in the workspace. Use this when:
+    - Changing relationship type (e.g., FF to SS)
+    - Adjusting lag/lead times
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        predecessor_task_id: Task ID of the predecessor activity
+        successor_task_id: Task ID of the successor activity
+        new_relationship_type: New type (FS, SS, FF, SF) - optional
+        new_lag_hours: New lag in hours (positive = delay, negative = lead) - optional
+    
+    Returns:
+        Confirmation of the relationship modification
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_to_workspace_tool first."
+        
+        # Find the relationship
+        rel_mask = (
+            (workspace.relationships_df['pred_task_id'] == predecessor_task_id) &
+            (workspace.relationships_df['task_id'] == successor_task_id)
+        )
+        
+        if not rel_mask.any():
+            return f"No relationship found from task_id {predecessor_task_id} to task_id {successor_task_id}."
+        
+        # Get current values for reporting
+        old_type = workspace.relationships_df.loc[rel_mask, 'pred_type'].values[0]
+        old_lag = workspace.relationships_df.loc[rel_mask, 'lag_hr_cnt'].values[0]
+        
+        changes = []
+        
+        # Update relationship type if provided
+        if new_relationship_type:
+            valid_types = ['FS', 'SS', 'FF', 'SF']
+            if new_relationship_type.upper() not in valid_types:
+                return f"Invalid relationship type '{new_relationship_type}'. Use one of: {', '.join(valid_types)}"
+            
+            type_map = {'FS': 'PR_FS', 'SS': 'PR_SS', 'FF': 'PR_FF', 'SF': 'PR_SF'}
+            new_pred_type = type_map[new_relationship_type.upper()]
+            workspace.relationships_df.loc[rel_mask, 'pred_type'] = new_pred_type
+            
+            # Convert old type for display
+            old_type_display = old_type.replace('PR_', '') if old_type.startswith('PR_') else old_type
+            changes.append(f"type {old_type_display} -> {new_relationship_type.upper()}")
+        
+        # Update lag if provided
+        if new_lag_hours is not None:
+            workspace.relationships_df.loc[rel_mask, 'lag_hr_cnt'] = new_lag_hours
+            changes.append(f"lag {old_lag}h -> {new_lag_hours}h")
+        
+        if not changes:
+            return "No changes specified. Provide new_relationship_type or new_lag_hours."
+        
+        workspace.is_modified = True
+        
+        # Get activity names for confirmation
+        pred_name = workspace.activities_df.loc[
+            workspace.activities_df['task_id'] == predecessor_task_id, 'task_name'
+        ].values[0]
+        succ_name = workspace.activities_df.loc[
+            workspace.activities_df['task_id'] == successor_task_id, 'task_name'
+        ].values[0]
+        
+        return f"Modified relationship {pred_name} -> {succ_name}: {', '.join(changes)}"
+        
+    except Exception as e:
+        logfire.error("Error in modify_relationship_in_workspace_tool", error=str(e))
+        return f"Error modifying relationship: {str(e)}"
+

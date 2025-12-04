@@ -131,7 +131,9 @@ class NetworkCalculator:
         self._warnings: list[str] = []
         
     def _hours_to_days(self, hours: float) -> float:
-        """Convert hours to work days."""
+        """Convert hours to work days. Handles NaN/None by returning 0."""
+        if hours is None or (isinstance(hours, float) and pd.isna(hours)):
+            return 0.0
         return hours / self.hours_per_day
     
     def _days_to_work_date(self, start_date: date, work_days: float) -> date:
@@ -184,7 +186,9 @@ class NetworkCalculator:
         
         # Add activity nodes
         for _, row in self.activities_df.iterrows():
-            duration_days = self._hours_to_days(row.get('duration_hours', 0))
+            # Support both P6 column name (target_drtn_hr_cnt) and legacy (duration_hours)
+            duration_hours = row.get('target_drtn_hr_cnt') or row.get('duration_hours') or 0
+            duration_days = self._hours_to_days(duration_hours)
             
             self.graph.add_node(
                 row['task_id'],

@@ -289,6 +289,22 @@ class ScheduleStateManager:
         Returns:
             Populated ScheduleWorkspace
         """
+        # Ensure DataFrames have required columns (handles empty project case)
+        required_activity_cols = [
+            'task_id', 'task_code', 'task_name', 'target_drtn_hr_cnt', 'remain_drtn_hr_cnt',
+            'target_start_date', 'target_end_date', 'wbs_id', 'wbs_path', 
+            'status_code', 'total_float_hr_cnt', 'free_float_hr_cnt'
+        ]
+        required_rel_cols = ['task_pred_id', 'task_id', 'pred_task_id', 'pred_type', 'lag_hr_cnt']
+        
+        for col in required_activity_cols:
+            if col not in activities_df.columns:
+                activities_df[col] = None
+        
+        for col in required_rel_cols:
+            if col not in relationships_df.columns:
+                relationships_df[col] = None
+        
         workspace = ScheduleWorkspace(
             conversation_id=conversation_id,
             project_id=project_id,
