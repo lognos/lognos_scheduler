@@ -1,34 +1,48 @@
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.settings import ModelSettings
 from backend.prompt.loader import PromptLoader
-from backend.tools.p6_tools import (
-    create_activity_tool, 
-    create_relationship_tool, 
-    update_progress_tool, 
-    get_activity_details_tool, 
-    update_activity_status_tool, 
-    create_project_tool,
-    list_projects_tool,
-    list_activities_tool,
-    search_activity_tool, 
-    index_project_tool,
-    delete_relationship_tool,
-    update_relationship_tool,
-    list_activity_codes_tool,
-    get_activity_current_codes_tool,
-    assign_activity_codes_tool,
-    remove_activity_codes_tool,
-    bulk_assign_activity_codes_tool,
-    # Gantt workspace tools
-    load_schedule_to_workspace_tool,
-    calculate_and_display_gantt_tool,
-    modify_activity_in_workspace_tool,
-    add_activity_to_workspace_tool,
-    add_relationship_to_workspace_tool,
-    modify_relationship_in_workspace_tool,
-    hide_gantt_panel_tool,
-    get_workspace_status_tool,
-    AgentDeps
+from backend.tools import (
+    # Base
+    AgentDeps,
+    
+    # P6 Query tools
+    get_activity_p6,
+    search_activities_p6,
+    list_projects_p6,
+    list_activities_p6,
+    list_activity_codes_p6,
+    get_activity_codes_p6,
+    
+    # P6 Activity tools
+    create_activity_p6,
+    update_activity_status_p6,
+    update_progress_p6,
+    
+    # P6 Relationship tools
+    create_relationship_p6,
+    update_relationship_p6,
+    delete_relationship_p6,
+    
+    # P6 Project tools
+    create_project_p6,
+    
+    # P6 Activity code tools
+    assign_activity_codes_p6,
+    remove_activity_codes_p6,
+    bulk_assign_activity_codes_p6,
+    
+    # Workspace tools
+    get_workspace_status_ws,
+    load_schedule_ws,
+    calculate_gantt_ws,
+    modify_activity_ws,
+    add_activity_ws,
+    add_relationship_ws,
+    modify_relationship_ws,
+    hide_gantt_ws,
+    
+    # Indexing tools
+    index_project,
 )
 from backend.models.io import AgentOutput
 from backend.config.settings import settings
@@ -51,31 +65,43 @@ scheduling_agent = Agent(
     ),
     system_prompt=PromptLoader.get_prompt("scheduler_system.xml.j2"),
     tools=[
-        create_activity_tool, 
-        create_relationship_tool, 
-        update_progress_tool, 
-        get_activity_details_tool, 
-        update_activity_status_tool, 
-        create_project_tool,
-        list_projects_tool,
-        list_activities_tool,
-        search_activity_tool,
-        index_project_tool,
-        delete_relationship_tool,
-        update_relationship_tool,
-        list_activity_codes_tool,
-        get_activity_current_codes_tool,
-        assign_activity_codes_tool,
-        remove_activity_codes_tool,
-        bulk_assign_activity_codes_tool,
-        # Gantt workspace tools
-        load_schedule_to_workspace_tool,
-        calculate_and_display_gantt_tool,
-        modify_activity_in_workspace_tool,
-        add_activity_to_workspace_tool,
-        add_relationship_to_workspace_tool,
-        modify_relationship_in_workspace_tool,
-        hide_gantt_panel_tool,
-        get_workspace_status_tool,
+        # P6 Query tools
+        get_activity_p6,
+        search_activities_p6,
+        list_projects_p6,
+        list_activities_p6,
+        list_activity_codes_p6,
+        get_activity_codes_p6,
+        
+        # P6 Activity tools
+        create_activity_p6,
+        update_activity_status_p6,
+        update_progress_p6,
+        
+        # P6 Relationship tools
+        create_relationship_p6,
+        update_relationship_p6,
+        delete_relationship_p6,
+        
+        # P6 Project tools
+        create_project_p6,
+        
+        # P6 Activity code tools
+        assign_activity_codes_p6,
+        remove_activity_codes_p6,
+        bulk_assign_activity_codes_p6,
+        
+        # Workspace tools
+        get_workspace_status_ws,
+        load_schedule_ws,
+        calculate_gantt_ws,
+        modify_activity_ws,
+        add_activity_ws,
+        add_relationship_ws,
+        modify_relationship_ws,
+        hide_gantt_ws,
+        
+        # Indexing tools
+        index_project,
     ],
 )
