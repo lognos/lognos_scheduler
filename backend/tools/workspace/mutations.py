@@ -30,16 +30,52 @@ async def load_schedule_ws(
         if not conversation_id:
             return "Error: No conversation_id available. Cannot load workspace."
         
-        # Load from P6 using the service's connection
+        # Load schedule data from P6 via service
+        schedule_data = ctx.deps.service.load_schedule_for_workspace(
+            proj_id, 
+            conn=ctx.deps.conn
+        )
+        
+        project_info = schedule_data['project_info']
+        
+        # Convert to DataFrames
+        activities_df = pd.DataFrame(schedule_data['activities'])
+        relationships_df = pd.DataFrame(schedule_data['relationships'])
+        activity_codes_df = pd.DataFrame(schedule_data['activity_codes'])
+        
+        # Parse P6 project dates
+        p6_start = None
+        p6_finish = None
+        if project_info.get('plan_start_date'):
+            try:
+                p6_start = pd.to_datetime(project_info['plan_start_date']).date()
+            except Exception:
+                pass
+        if project_info.get('plan_end_date'):
+            try:
+                p6_finish = pd.to_datetime(project_info['plan_end_date']).date()
+            except Exception:
+                pass
+        
+        # Load into workspace
         workspace = schedule_state_manager.load_from_p6(
             conversation_id=conversation_id,
-            conn=ctx.deps.conn,
-            proj_id=proj_id
+            project_id=proj_id,
+            project_name=project_info.get('project_name', 'Unknown'),
+            activities_df=activities_df,
+            relationships_df=relationships_df,
+            activity_codes_df=activity_codes_df,
+            code_types_with_values=schedule_data['available_codes'],
+            project_start=p6_start,
+            project_finish=p6_finish
         )
         
         # Minimal response to reduce token usage
-        return f"Loaded proj_id={proj_id}: {len(workspace.activities_df)} activities, {len(workspace.relationships_df)} relationships. Use calculate_gantt_ws to see Gantt chart."
+        activity_count = len(workspace.activities_df)
+        return f"Loaded '{project_info.get('project_name', 'Unknown')}': {activity_count} activities. Use calculate_gantt_ws to see Gantt chart."
         
+    except ValueError as e:
+        return f"Error loading schedule: {e}"
     except Exception as e:
         logfire.error("Error in load_schedule_ws", error=str(e))
         return f"Error loading schedule: {str(e)}"
@@ -69,72 +105,88 @@ async def calculate_gantt_ws(
         if not workspace:
             return "No schedule workspace active. Use load_schedule_ws first."
         
+        if workspace.activities_df.empty:
+            return "Schedule workspace is empty. Load a schedule first."
+        
         # Import here to avoid circular imports
-        from backend.services.cpm_calculator import CPMCalculator
+        from backend.services.network_calculator import NetworkCalculator, ScheduleValidationError
         
         # Run CPM calculation
-        calculator = CPMCalculator(
+        calculator = NetworkCalculator(
             activities_df=workspace.activities_df,
-            relationships_df=workspace.relationships_df
+            relationships_df=workspace.relationships_df,
+            project_start_date=workspace.project_start
         )
         
-        result = calculator.calculate()
-        workspace.calculation_result = result
+        try:
+            result = calculator.calculate()
+        except ScheduleValidationError as e:
+            return f"Schedule validation failed: {'; '.join(e.errors)}"
+        
+        # Update workspace with calculation results
+        calc_df = pd.DataFrame([{
+            'task_id': a.task_id,
+            'early_start': a.early_start,
+            'early_finish': a.early_finish,
+            'late_start': a.late_start,
+            'late_finish': a.late_finish,
+            'total_float_days': a.total_float_days,
+            'free_float_days': a.free_float_days,
+            'is_critical': a.is_critical,
+            'status': a.status,
+        } for a in result.activities])
+        
+        workspace.update_from_calculation(
+            activities_with_dates=calc_df,
+            project_start=result.project_start,
+            project_finish=result.project_finish,
+            critical_path_ids=result.critical_path_ids
+        )
         
         # Build Gantt data for frontend
-        gantt_activities = []
+        gantt_items = []
         for _, row in workspace.activities_df.iterrows():
-            task_id = row['task_id']
-            
-            # Get calculated dates from result
-            calc_data = result['activities'].get(task_id, {})
-            
-            gantt_activities.append({
-                'id': str(task_id),
-                'task_id': task_id,
-                'task_code': row['task_code'],
-                'task_name': row['task_name'],
-                'early_start': calc_data.get('early_start'),
-                'early_finish': calc_data.get('early_finish'),
-                'late_start': calc_data.get('late_start'),
-                'late_finish': calc_data.get('late_finish'),
-                'duration_hours': row['target_drtn_hr_cnt'],
-                'total_float': calc_data.get('total_float', 0),
-                'is_critical': task_id in result.get('critical_path', []),
-                'status_code': row.get('status_code', 'TK_NotStart'),
-                'wbs_path': row.get('wbs_path'),
+            gantt_items.append({
+                'id': int(row['task_id']),
+                's_item_id': row['task_code'],
+                's_item': row['task_name'],
+                'total_duration': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
+                'start': row['early_start'].isoformat() if pd.notna(row.get('early_start')) else '',
+                'finish': row['early_finish'].isoformat() if pd.notna(row.get('early_finish')) else '',
+                'is_critical': bool(row.get('is_critical', False)),
+                'wbs_path': row.get('wbs_path', ''),
+                'status': row.get('status', 'not_started'),
             })
         
-        # Build relationships for frontend
-        gantt_relationships = []
-        for _, row in workspace.relationships_df.iterrows():
-            gantt_relationships.append({
-                'predecessor_id': str(row['pred_task_id']),
-                'successor_id': str(row['task_id']),
-                'type': row['pred_type'].replace('PR_', '') if row['pred_type'].startswith('PR_') else row['pred_type'],
-                'lag_hours': row.get('lag_hr_cnt', 0),
-            })
-        
-        # Send to frontend via event queue
-        if ctx.deps.gantt_event_queue is not None:
-            gantt_event = {
-                'type': 'gantt_data',
-                'data': {
-                    'title': title,
-                    'project_id': workspace.project_id,
-                    'activities': gantt_activities,
-                    'relationships': gantt_relationships,
-                    'critical_path': result.get('critical_path', []),
-                    'project_duration_days': result.get('project_duration_days'),
-                }
+        # Stream Gantt panel event to frontend
+        gantt_event = {
+            'type': 'gantt_panel',
+            'action': 'show',
+            'data': {
+                'items': gantt_items,
+                'project_start': result.project_start.isoformat(),
+                'project_finish': result.project_finish.isoformat(),
+                'critical_path_length': result.critical_path_length_days,
+                'filter_applied': {
+                    'wbs_path': None,
+                    'critical_only': False,
+                    'activity_codes': None,
+                    'status': None,
+                    'search_term': None,
+                },
+                'total_activities': len(workspace.activities_df),
+                'filtered_activities': len(gantt_items),
+                'available_activity_codes': workspace.code_types_with_values,
             }
+        }
+        
+        # Store event for streaming (will be picked up by chat router)
+        if ctx.deps.gantt_event_queue is not None:
             ctx.deps.gantt_event_queue.append(gantt_event)
         
-        # Build summary response
-        critical_count = len(result.get('critical_path', []))
-        duration_days = result.get('project_duration_days', 'N/A')
-        
-        return f"Calculated schedule: {len(gantt_activities)} activities, {critical_count} critical, {duration_days} days duration. Gantt chart displayed."
+        # Return minimal summary - full data already streamed to frontend via gantt_event
+        warning_note = f" ({len(result.warnings)} warnings)" if result.warnings else ""
+        return f"Gantt displayed: {len(gantt_items)} activities, {result.critical_path_length_days:.0f} day critical path{warning_note}"
         
     except Exception as e:
         logfire.error("Error in calculate_gantt_ws", error=str(e))
