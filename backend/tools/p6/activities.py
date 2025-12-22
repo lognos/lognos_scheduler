@@ -32,6 +32,7 @@ async def create_activity_p6(ctx: RunContext[AgentDeps], req: ActivityCreateRequ
     """
     try:
         task_id = ctx.deps.service.create_activity(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
         return f"Successfully created activity '{req.task_code}' ({req.task_name}) with internal ID {task_id}."
     except Exception as e:
         logfire.error("Error in create_activity_p6", error=str(e))
@@ -56,6 +57,7 @@ async def update_progress_p6(ctx: RunContext[AgentDeps], req: ProgressUpdateRequ
     """
     try:
         result = ctx.deps.service.update_progress(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
         return result
     except Exception as e:
         logfire.error("Error in update_progress_p6", error=str(e))
@@ -85,7 +87,9 @@ async def update_activity_status_p6(ctx: RunContext[AgentDeps], req: ActivitySta
         ModelRetry: If validation fails (e.g., missing required dates for status transition).
     """
     try:
-        return ctx.deps.service.update_activity_status(req, conn=ctx.deps.conn)
+        result = ctx.deps.service.update_activity_status(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
+        return result
     except ValueError as e:
         # P6 business rule violation - agent should provide required dates
         raise ModelRetry(f"Status update failed: {e}. Please provide the required dates.")

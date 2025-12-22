@@ -33,6 +33,7 @@ async def create_relationship_p6(ctx: RunContext[AgentDeps], req: RelationshipCr
     """
     try:
         ctx.deps.service.create_relationship(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
         lag_info = f" with lag {req.lag}h" if req.lag else ""
         return f"Successfully linked {req.pred_task_code} -> {req.succ_task_code} ({req.pred_type}){lag_info}."
     except ValueError as e:
@@ -63,7 +64,9 @@ async def update_relationship_p6(ctx: RunContext[AgentDeps], req: RelationshipUp
         ModelRetry: If relationship not found (may need to verify task codes).
     """
     try:
-        return ctx.deps.service.update_relationship(req, conn=ctx.deps.conn)
+        result = ctx.deps.service.update_relationship(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
+        return result
     except ValueError as e:
         # Relationship not found
         raise ModelRetry(f"Relationship not found: {e}. Verify task codes using search_activities_p6.")
@@ -92,7 +95,9 @@ async def delete_relationship_p6(ctx: RunContext[AgentDeps], req: RelationshipDe
         ModelRetry: If relationship not found (may need to search for correct task codes).
     """
     try:
-        return ctx.deps.service.delete_relationship(req, conn=ctx.deps.conn)
+        result = ctx.deps.service.delete_relationship(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
+        return result
     except ValueError as e:
         # Relationship not found - agent should search for correct task codes
         raise ModelRetry(f"Relationship not found: {e}. Use search_activities_p6 to find correct task codes.")

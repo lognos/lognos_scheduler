@@ -25,6 +25,7 @@ async def create_project_p6(ctx: RunContext[AgentDeps], req: ProjectCreateReques
     """
     try:
         proj_id, wbs_id = ctx.deps.service.create_project(req, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup
         return f"Successfully created project '{req.project_short_name}' ({req.project_name}) with ID {proj_id}. Root WBS ID: {wbs_id}."
     except Exception as e:
         logfire.error("Error in create_project_p6", error=str(e))

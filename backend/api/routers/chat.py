@@ -183,11 +183,13 @@ async def chat_stream(
             # Queue for gantt panel events from tools
             gantt_event_queue: list[dict] = []
             
-            with SafeP6Transaction() as conn:
+            with SafeP6Transaction() as transaction:
+                conn = transaction.conn
                 deps = AgentDeps(
                     service=service,
                     vector_service=vector_service,
                     conn=conn,
+                    transaction=transaction,
                     gantt_event_queue=gantt_event_queue,
                     conversation_id=conversation_id
                 )
@@ -387,11 +389,13 @@ async def chat_sync(
         service = SchedulingService()
         vector_service = VectorService()
         
-        with SafeP6Transaction() as conn:
+        with SafeP6Transaction() as transaction:
+            conn = transaction.conn
             deps = AgentDeps(
                 service=service,
                 vector_service=vector_service,
-                conn=conn
+                conn=conn,
+                transaction=transaction
             )
             
             with logfire.span("agent_run_sync", message=req.message, p6_proj_id=p6_proj_id):

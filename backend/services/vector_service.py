@@ -42,9 +42,9 @@ class VectorService:
         if conn:
             self._index_project_impl(conn, proj_id)
         else:
-            with SafeP6Transaction() as safe_conn:
-                self._index_project_impl(safe_conn, proj_id)
-                safe_conn.commit()
+            with SafeP6Transaction() as txn:
+                self._index_project_impl(txn.conn, proj_id)
+                txn.mark_modified()
 
     def _index_project_impl(self, conn: sqlite3.Connection, proj_id: int):
         self.ensure_schema(conn)

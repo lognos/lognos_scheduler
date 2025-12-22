@@ -43,6 +43,10 @@ async def assign_activity_codes_p6(
     try:
         result = ctx.deps.service.assign_activity_codes(req, conn=ctx.deps.conn)
         
+        # Mark modified if any codes were assigned or replaced
+        if result['assigned'] or result['replaced']:
+            ctx.deps.mark_modified()
+        
         lines = [f"Assignment results for activity '{result['task_code']}':", ""]
         
         if result['assigned']:
@@ -92,6 +96,10 @@ async def remove_activity_codes_p6(
     """
     try:
         result = ctx.deps.service.remove_activity_codes(req, conn=ctx.deps.conn)
+        
+        # Mark modified if any codes were removed
+        if result['removed']:
+            ctx.deps.mark_modified()
         
         lines = [f"Removal results for activity '{result['task_code']}':", ""]
         
@@ -153,6 +161,10 @@ async def bulk_assign_activity_codes_p6(
             for err in result['resolution_errors']:
                 lines.append(f"  - {err}")
             return "\n".join(lines)
+        
+        # Mark modified if any codes were assigned
+        if result['total_tasks'] > 0:
+            ctx.deps.mark_modified()
         
         lines = [f"Bulk assignment completed for {result['total_tasks']} activities:", ""]
         

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from pydantic_ai import RunContext, ModelRetry
 import logfire
@@ -25,6 +25,9 @@ from backend.models.io import (
     ListActivitiesRequest,
 )
 
+if TYPE_CHECKING:
+    from backend.utils.safe_db import SafeP6Transaction
+
 
 @dataclass
 class AgentDeps:
@@ -34,14 +37,21 @@ class AgentDeps:
         service: The scheduling service for P6 operations.
         vector_service: Optional vector search service for semantic search.
         conn: Optional database connection for direct queries.
+        transaction: Optional SafeP6Transaction for marking modifications.
         gantt_event_queue: Queue for gantt panel events to be streamed to frontend.
         conversation_id: Unique conversation ID for workspace isolation.
     """
     service: SchedulingService
     vector_service: Optional[VectorService] = None
     conn: Optional[object] = None
+    transaction: Optional["SafeP6Transaction"] = None
     gantt_event_queue: Optional[list] = None
     conversation_id: Optional[str] = None
+    
+    def mark_modified(self):
+        """Mark the transaction as modified so the database will be backed up and saved."""
+        if self.transaction:
+            self.transaction.mark_modified()
 
 @logfire.instrument("delete_relationship_tool")
 async def delete_relationship_tool(ctx: RunContext[AgentDeps], req: RelationshipDeleteRequest) -> str:

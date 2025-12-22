@@ -28,9 +28,9 @@ class SchedulingService:
     def delete_relationship(self, req: RelationshipDeleteRequest, conn=None) -> str:
         if conn:
             return self._delete_relationship_impl(conn, req)
-        with SafeP6Transaction() as safe_conn:
-            result = self._delete_relationship_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._delete_relationship_impl(txn.conn, req)
+            txn.mark_modified()
             return result
 
     def _delete_relationship_impl(self, conn, req: RelationshipDeleteRequest) -> str:
@@ -53,9 +53,9 @@ class SchedulingService:
     def update_relationship(self, req: RelationshipUpdateRequest, conn=None) -> str:
         if conn:
             return self._update_relationship_impl(conn, req)
-        with SafeP6Transaction() as safe_conn:
-            result = self._update_relationship_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._update_relationship_impl(txn.conn, req)
+            txn.mark_modified()
             return result
 
     def _update_relationship_impl(self, conn, req: RelationshipUpdateRequest) -> str:
@@ -99,9 +99,9 @@ class SchedulingService:
             return self._update_activity_status_impl(conn, req)
         
         # Write operations use SafeP6Transaction
-        with SafeP6Transaction() as safe_conn:
-            result = self._update_activity_status_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._update_activity_status_impl(txn.conn, req)
+            txn.mark_modified()
             return result
 
     def _update_activity_status_impl(self, conn, req: ActivityStatusUpdateRequest) -> str:
@@ -161,9 +161,9 @@ class SchedulingService:
         if conn:
             return self._create_activity_impl(conn, req)
             
-        with SafeP6Transaction() as safe_conn:
-            result = self._create_activity_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._create_activity_impl(txn.conn, req)
+            txn.mark_modified()
             return result
 
     def _create_activity_impl(self, conn, req: ActivityCreateRequest) -> int:
@@ -211,18 +211,18 @@ class SchedulingService:
         if conn:
             return self._create_relationship_impl(conn, req)
             
-        with SafeP6Transaction() as safe_conn:
-            result = self._create_relationship_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._create_relationship_impl(txn.conn, req)
+            txn.mark_modified()
             return result
 
     def create_project(self, req: ProjectCreateRequest, conn=None) -> tuple[int, int]:
         if conn:
             return self.repo.create_project(conn, req.project_short_name, req.project_name, req.planned_start_date)
             
-        with SafeP6Transaction() as safe_conn:
-            proj_id, wbs_id = self.repo.create_project(safe_conn, req.project_short_name, req.project_name, req.planned_start_date)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            proj_id, wbs_id = self.repo.create_project(txn.conn, req.project_short_name, req.project_name, req.planned_start_date)
+            txn.mark_modified()
             return proj_id, wbs_id
 
     def _create_relationship_impl(self, conn, req: RelationshipCreateRequest) -> int:
@@ -253,9 +253,9 @@ class SchedulingService:
         if conn:
             return self._update_progress_impl(conn, req)
             
-        with SafeP6Transaction() as safe_conn:
-            result = self._update_progress_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._update_progress_impl(txn.conn, req)
+            txn.mark_modified()
             return result
 
     def _update_progress_impl(self, conn, req: ProgressUpdateRequest) -> str:
@@ -461,9 +461,10 @@ class SchedulingService:
         if conn:
             return self._assign_activity_codes_impl(conn, req)
         
-        with SafeP6Transaction() as safe_conn:
-            result = self._assign_activity_codes_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._assign_activity_codes_impl(txn.conn, req)
+            if result.get('assigned') or result.get('replaced'):
+                txn.mark_modified()
             return result
     
     def _assign_activity_codes_impl(self, conn, req: AssignActivityCodeRequest) -> dict:
@@ -557,9 +558,10 @@ class SchedulingService:
         if conn:
             return self._remove_activity_codes_impl(conn, req)
         
-        with SafeP6Transaction() as safe_conn:
-            result = self._remove_activity_codes_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._remove_activity_codes_impl(txn.conn, req)
+            if result.get('removed'):
+                txn.mark_modified()
             return result
     
     def _remove_activity_codes_impl(self, conn, req: RemoveActivityCodeRequest) -> dict:
@@ -627,9 +629,10 @@ class SchedulingService:
         if conn:
             return self._bulk_assign_activity_codes_impl(conn, req)
         
-        with SafeP6Transaction() as safe_conn:
-            result = self._bulk_assign_activity_codes_impl(safe_conn, req)
-            safe_conn.commit()
+        with SafeP6Transaction() as txn:
+            result = self._bulk_assign_activity_codes_impl(txn.conn, req)
+            if result.get('success') and result.get('total_tasks', 0) > 0:
+                txn.mark_modified()
             return result
     
     def _bulk_assign_activity_codes_impl(

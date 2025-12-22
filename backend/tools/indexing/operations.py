@@ -29,6 +29,7 @@ async def index_project(ctx: RunContext[AgentDeps], req: IndexProjectRequest) ->
 
     try:
         ctx.deps.vector_service.index_project(req.proj_id, conn=ctx.deps.conn)
+        ctx.deps.mark_modified()  # Mark transaction as modified for backup (embeddings stored in DB)
         return f"Successfully indexed project {req.proj_id}. You can now search for activities by description."
     except Exception as e:
         logfire.error("Error in index_project", error=str(e))

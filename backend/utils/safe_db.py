@@ -19,10 +19,13 @@ class SafeP6Transaction(ContextDecorator):
     Workflow:
     1. Copies the live DB to a temporary file.
     2. Yields a connection to the temporary file.
-    3. On exit (if no errors):
+    3. On exit (if no errors AND modifications were made):
        a. Checks integrity of the temporary file.
        b. Moves the original DB to a 'superseded' subfolder with a timestamp.
        c. Moves the temporary file to the original location.
+    
+    Note: Call mark_modified() to signal that changes were made.
+    If no modifications are marked, the temp file is discarded without backup.
     """
     def __init__(self):
         self.original_db_path = settings.P6_DB_LOC
@@ -31,6 +34,11 @@ class SafeP6Transaction(ContextDecorator):
         # Using a unique name.
         self.temp_db_path = f"{self.original_db_path}.temp_{int(datetime.now().timestamp())}.db"
         self.conn = None
+        self._modified = False  # Track whether any modifications were made
+    
+    def mark_modified(self):
+        """Mark that the database has been modified and should be saved."""
+        self._modified = True
 
     def __enter__(self):
         # 1. Copy original to temp
@@ -45,7 +53,7 @@ class SafeP6Transaction(ContextDecorator):
 
         # 2. Connect to temp
         self.conn = sqlite3.connect(self.temp_db_path)
-        return self.conn
+        return self  # Return self so caller can access both conn and mark_modified()
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_type:
@@ -56,7 +64,7 @@ class SafeP6Transaction(ContextDecorator):
             self._cleanup_temp()
             return False # Propagate exception
 
-        # Success path: Commit changes to temp DB
+        # Close connection (commit any pending transactions)
         try:
             if self.conn:
                 self.conn.commit()
@@ -66,6 +74,14 @@ class SafeP6Transaction(ContextDecorator):
             self._cleanup_temp()
             raise
 
+        # If no modifications were made, just discard the temp file
+        if not self._modified:
+            logfire.debug("No modifications made during transaction. Discarding temp file.")
+            self._cleanup_temp()
+            return True
+
+        # Modifications were made - proceed with backup and replace
+        
         # 3. Check Integrity
         if not self._check_integrity():
             logfire.error("Database integrity check failed on modified temporary file. Operation aborted.")

@@ -24,8 +24,9 @@ async def main():
     print(f"Running agent with message: {message}")
     
     try:
-        with SafeP6Transaction() as conn:
-            deps = AgentDeps(service=service, vector_service=vector_service, conn=conn)
+        with SafeP6Transaction() as transaction:
+            conn = transaction.conn
+            deps = AgentDeps(service=service, vector_service=vector_service, conn=conn, transaction=transaction)
             
             # Mocking the context project ID as 1 (default)
             full_message = f"Context: Project ID 1\n\n{message}"
