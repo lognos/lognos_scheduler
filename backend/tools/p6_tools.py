@@ -972,14 +972,30 @@ async def calculate_and_display_gantt_tool(
         
         # Build Gantt data for streaming
         gantt_items = []
+        hours_per_day = 8.0  # Standard P6 calendar assumption
+        
         for _, row in filtered_df.iterrows():
+            # Working days = planned duration in hours / hours per day
+            duration_hours = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
+            working_days = duration_hours / hours_per_day
+            
+            # Calendar days = difference between early finish and early start (inclusive)
+            early_start = row.get('early_start')
+            early_finish = row.get('early_finish')
+            if pd.notna(early_start) and pd.notna(early_finish):
+                calendar_days = (early_finish - early_start).days + 1
+            else:
+                calendar_days = 0
+                
             gantt_items.append({
                 'id': int(row['task_id']),
                 's_item_id': row['task_code'],
                 's_item': row['task_name'],
-                'total_duration': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
-                'start': row['early_start'].isoformat() if pd.notna(row.get('early_start')) else '',
-                'finish': row['early_finish'].isoformat() if pd.notna(row.get('early_finish')) else '',
+                'working_days': working_days,
+                'calendar_days': calendar_days,
+                'total_float': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
+                'start': early_start.isoformat() if pd.notna(early_start) else '',
+                'finish': early_finish.isoformat() if pd.notna(early_finish) else '',
                 'is_critical': bool(row.get('is_critical', False)),
                 'wbs_path': row.get('wbs_path', ''),
                 'status': row.get('status', 'not_started'),

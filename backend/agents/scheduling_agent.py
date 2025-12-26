@@ -34,6 +34,8 @@ from backend.tools import (
     # Workspace tools
     get_workspace_status_ws,
     load_schedule_ws,
+    create_schedule_ws,
+    clear_schedule_ws,
     calculate_gantt_ws,
     modify_activity_ws,
     add_activity_ws,
@@ -49,9 +51,9 @@ from backend.config.settings import settings
 
 # Usage limits to pass at runtime (prevents runaway loops)
 SCHEDULING_USAGE_LIMITS = UsageLimits(
-    request_limit=25,  # Maximum requests per run
-    input_tokens_limit=100_000,  # Input token limit (Gemini 2.5 Flash supports 1M)
-    output_tokens_limit=8_000,  # Output token limit
+    request_limit=30,  # Maximum requests per run (increased for complex schedules)
+    input_tokens_limit=500_000,  # Input token limit (Gemini 2.5 Flash supports 1M)
+    output_tokens_limit=16_000,  # Output token limit (increased for multi-activity creation)
 )
 
 # Define the Agent with structured output
@@ -94,6 +96,8 @@ scheduling_agent = Agent(
         # Workspace tools
         get_workspace_status_ws,
         load_schedule_ws,
+        create_schedule_ws,
+        clear_schedule_ws,
         calculate_gantt_ws,
         modify_activity_ws,
         add_activity_ws,

@@ -207,51 +207,94 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
                         </div>
 
                         {/* Activity rows */}
-                        <div className="space-y-2">
-                            {processedItems.map((item) => (
-                                <div key={item.id} className="flex items-center group">
-                                    {/* Activity label */}
-                                    <div className="w-48 shrink-0 pr-2">
-                                        <div className="text-xs font-medium text-white truncate" title={item.s_item}>
-                                            {item.s_item}
-                                        </div>
-                                        <div className="text-xs text-gray-500">{item.s_item_id}</div>
-                                    </div>
-
-                                    {/* Timeline bar container */}
-                                    <div className="flex-1 relative h-7 rounded bg-dark-800/30">
-                                        {/* Activity bar */}
-                                        <div
-                                            className={`absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg ${
-                                                item.is_critical
-                                                    ? 'bg-red-500'
-                                                    : item.status === 'completed'
-                                                    ? 'bg-green-600'
-                                                    : item.status === 'in_progress'
-                                                    ? 'bg-blue-500'
-                                                    : 'bg-gray-600'
-                                            }`}
-                                            style={{
-                                                left: `${item.startPercentage}%`,
-                                                width: `${item.widthPercentage}%`,
-                                                minWidth: '16px',
-                                            }}
-                                            title={`${item.s_item}
-Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
-End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
-Duration: ${item.duration} days
-Float: ${item.total_duration.toFixed(1)} days
-${item.is_critical ? '(Critical Path)' : ''}`}
+                        <div className="space-y-1">
+                            {processedItems.map((item) => {
+                                const isSummary = item.is_summary === true;
+                                const indentLevel = (item.level || 2) - 1;
+                                const indentPx = indentLevel * 16;
+                                
+                                return (
+                                    <div 
+                                        key={item.id} 
+                                        className={`flex items-center group ${isSummary ? 'bg-dark-700/30' : ''}`}
+                                    >
+                                        {/* Activity label with indentation */}
+                                        <div 
+                                            className="w-48 shrink-0 pr-2 flex items-center"
+                                            style={{ paddingLeft: `${indentPx}px` }}
                                         >
-                                            {item.widthPercentage > 10 && (
-                                                <span className="truncate px-1 text-white text-[10px]">
-                                                    {item.duration}d
+                                            {isSummary && (
+                                                <span className="text-xs text-yellow-500 mr-1" title={`${item.children_count} activities`}>
+                                                    [{item.children_count}]
                                                 </span>
                                             )}
+                                            <div className="flex-1 min-w-0">
+                                                <div 
+                                                    className={`text-xs truncate ${
+                                                        isSummary 
+                                                            ? 'font-semibold text-yellow-400' 
+                                                            : 'font-medium text-white'
+                                                    }`} 
+                                                    title={item.s_item}
+                                                >
+                                                    {item.s_item}
+                                                </div>
+                                                <div className="text-xs text-gray-500">{item.s_item_id}</div>
+                                            </div>
+                                        </div>
+
+                                        {/* Timeline bar container */}
+                                        <div className="flex-1 relative h-7 rounded bg-dark-800/30">
+                                            {/* Activity bar */}
+                                            <div
+                                                className={`absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg ${
+                                                    isSummary
+                                                        ? 'bg-yellow-600/80 border border-yellow-500'
+                                                        : item.is_critical
+                                                        ? 'bg-red-500'
+                                                        : item.status === 'completed'
+                                                        ? 'bg-green-600'
+                                                        : item.status === 'in_progress'
+                                                        ? 'bg-blue-500'
+                                                        : 'bg-gray-600'
+                                                }`}
+                                                style={{
+                                                    left: `${item.startPercentage}%`,
+                                                    width: `${item.widthPercentage}%`,
+                                                    minWidth: '16px',
+                                                }}
+                                                title={isSummary 
+                                                    ? `${item.s_item} (Summary)
+${item.children_count} activities
+Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
+End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
+Calendar Span: ${item.calendar_days}d
+${item.is_critical ? '(Contains Critical Path)' : ''}`
+                                                    : `${item.s_item}
+Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
+End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
+Working Days: ${item.working_days}d
+Calendar Days: ${item.calendar_days}d
+Total Float: ${item.total_float.toFixed(1)} days
+${item.is_critical ? '(Critical Path)' : ''}`}
+                                            >
+                                                {item.widthPercentage > 12 ? (
+                                                    <span className="truncate px-1 text-white text-[10px]">
+                                                        {isSummary 
+                                                            ? `${item.calendar_days}d` 
+                                                            : `${item.working_days}d / ${item.calendar_days}d`
+                                                        }
+                                                    </span>
+                                                ) : item.widthPercentage > 6 ? (
+                                                    <span className="truncate px-1 text-white text-[10px]">
+                                                        {item.calendar_days}d
+                                                    </span>
+                                                ) : null}
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
                 )}
@@ -260,6 +303,12 @@ ${item.is_critical ? '(Critical Path)' : ''}`}
             {/* Legend */}
             <div className="px-4 py-2 border-t border-dark-700 bg-dark-800/30 text-xs rounded-b-xl">
                 <div className="flex items-center gap-4 text-gray-400">
+                    {data.grouping && (
+                        <div className="flex items-center gap-1">
+                            <div className="w-3 h-3 rounded bg-yellow-600 border border-yellow-500"></div>
+                            <span>Summary</span>
+                        </div>
+                    )}
                     <div className="flex items-center gap-1">
                         <div className="w-3 h-3 rounded bg-red-500"></div>
                         <span>Critical</span>
@@ -277,6 +326,11 @@ ${item.is_critical ? '(Critical Path)' : ''}`}
                         <span>Not Started</span>
                     </div>
                 </div>
+                {data.grouping && (
+                    <div className="mt-1 text-gray-500">
+                        Grouped by: {data.grouping}
+                    </div>
+                )}
             </div>
         </div>
     );

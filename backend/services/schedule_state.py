@@ -339,13 +339,43 @@ class ScheduleStateManager:
         Create a new empty workspace for building a schedule from scratch.
         
         Use case (c): Create new schedules before saving to P6.
+        
+        Initializes empty DataFrames with all required columns so that
+        add_activity_ws and add_relationship_ws tools work correctly.
         """
+        # Initialize empty DataFrames with required columns
+        # This matches the structure from load_from_p6 to ensure tools work
+        activities_df = pd.DataFrame(columns=[
+            'task_id', 'task_code', 'task_name', 'target_drtn_hr_cnt', 'remain_drtn_hr_cnt',
+            'target_start_date', 'target_end_date', 'wbs_id', 'wbs_path',
+            'status_code', 'total_float_hr_cnt', 'free_float_hr_cnt'
+        ])
+        
+        relationships_df = pd.DataFrame(columns=[
+            'task_pred_id', 'task_id', 'pred_task_id', 'pred_type', 'lag_hr_cnt'
+        ])
+        
+        activity_codes_df = pd.DataFrame(columns=[
+            'task_id', 'code_type_name', 'code_value_name'
+        ])
+        
         workspace = ScheduleWorkspace(
             conversation_id=conversation_id,
             project_name=project_name or "New Schedule",
+            activities_df=activities_df,
+            relationships_df=relationships_df,
+            activity_codes_df=activity_codes_df,
+            code_types_with_values={},
             source="new"
         )
         self._workspaces[conversation_id] = workspace
+        
+        logfire.info(
+            "Created new schedule workspace",
+            conversation_id=conversation_id,
+            project_name=project_name or "New Schedule"
+        )
+        
         return workspace
     
     def clear(self, conversation_id: str) -> None:

@@ -58,6 +58,8 @@ from backend.tools.workspace.queries import (
 # Workspace tools (mutations)
 from backend.tools.workspace.mutations import (
     load_schedule_ws,
+    create_schedule_ws,
+    clear_schedule_ws,
     calculate_gantt_ws,
     modify_activity_ws,
     add_activity_ws,
@@ -104,6 +106,8 @@ __all__ = [
     # Workspace tools
     "get_workspace_status_ws",
     "load_schedule_ws",
+    "create_schedule_ws",
+    "clear_schedule_ws",
     "calculate_gantt_ws",
     "modify_activity_ws",
     "add_activity_ws",

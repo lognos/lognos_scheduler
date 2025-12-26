@@ -84,9 +84,11 @@ async def load_schedule_ws(
 @logfire.instrument("calculate_gantt_ws")
 async def calculate_gantt_ws(
     ctx: RunContext[AgentDeps],
-    title: str = "Schedule Analysis"
+    title: str = "Schedule Analysis",
+    group_by: str | None = None,
+    show_details: bool = True
 ) -> str:
-    """Calculate CPM schedule and display Gantt chart.
+    """Calculate CPM schedule and display Gantt chart with optional grouping.
     
     Runs the Critical Path Method algorithm on the workspace data and
     sends a Gantt chart visualization to the frontend panel.
@@ -94,6 +96,12 @@ async def calculate_gantt_ws(
     Args:
         ctx: Runtime context with conversation_id in deps
         title: Title for the Gantt chart display
+        group_by: Optional grouping field. Use 'wbs' to group by WBS path,
+                  or an activity code type name (e.g., 'Phase', 'Discipline')
+                  to group activities by that code. When set, creates summary
+                  bars that span their child activities.
+        show_details: If True (default), show both summary and detail activities.
+                     If False, show only summary level (Level 1).
     
     Returns:
         Summary of calculation results including critical path
@@ -144,19 +152,148 @@ async def calculate_gantt_ws(
         )
         
         # Build Gantt data for frontend
-        gantt_items = []
-        for _, row in workspace.activities_df.iterrows():
-            gantt_items.append({
+        hours_per_day = 8.0  # Standard P6 calendar assumption
+        
+        def build_activity_item(row: pd.Series, level: int = 2, parent_id: str | None = None) -> dict:
+            """Build a Gantt item dict from a DataFrame row."""
+            duration_hours = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
+            working_days = duration_hours / hours_per_day
+            
+            early_start = row.get('early_start')
+            early_finish = row.get('early_finish')
+            if pd.notna(early_start) and pd.notna(early_finish):
+                calendar_days = (early_finish - early_start).days + 1
+            else:
+                calendar_days = 0
+            
+            return {
                 'id': int(row['task_id']),
                 's_item_id': row['task_code'],
                 's_item': row['task_name'],
-                'total_duration': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
-                'start': row['early_start'].isoformat() if pd.notna(row.get('early_start')) else '',
-                'finish': row['early_finish'].isoformat() if pd.notna(row.get('early_finish')) else '',
+                'working_days': working_days,
+                'calendar_days': calendar_days,
+                'total_float': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
+                'start': early_start.isoformat() if pd.notna(early_start) else '',
+                'finish': early_finish.isoformat() if pd.notna(early_finish) else '',
                 'is_critical': bool(row.get('is_critical', False)),
                 'wbs_path': row.get('wbs_path', ''),
                 'status': row.get('status', 'not_started'),
-            })
+                'level': level,
+                'is_summary': False,
+                'parent_id': parent_id,
+                'children_count': 0,
+                'group_name': None,
+            }
+        
+        gantt_items = []
+        grouping_applied = None
+        
+        if group_by:
+            # Determine grouping source
+            if group_by.lower() == 'wbs':
+                # Group by WBS path (use first segment as group)
+                grouping_applied = 'WBS'
+                groups: dict[str, list[int]] = {}
+                for _, row in workspace.activities_df.iterrows():
+                    wbs_path = row.get('wbs_path', '') or ''
+                    # Use first WBS segment as group, or "Ungrouped" if empty
+                    group_key = wbs_path.split('/')[0] if wbs_path else 'Ungrouped'
+                    if group_key not in groups:
+                        groups[group_key] = []
+                    groups[group_key].append(int(row['task_id']))
+            else:
+                # Group by activity code type
+                grouping_applied = group_by
+                groups = {}
+                
+                if not workspace.activity_codes_df.empty:
+                    # Find activities with this code type
+                    code_mask = workspace.activity_codes_df['code_type_name'].str.lower() == group_by.lower()
+                    codes_for_type = workspace.activity_codes_df[code_mask]
+                    
+                    for _, code_row in codes_for_type.iterrows():
+                        group_key = code_row.get('code_value_name', 'Unknown')
+                        task_id = int(code_row['task_id'])
+                        if group_key not in groups:
+                            groups[group_key] = []
+                        groups[group_key].append(task_id)
+                    
+                    # Find activities without this code type
+                    assigned_task_ids = set(codes_for_type['task_id'].tolist())
+                    all_task_ids = set(workspace.activities_df['task_id'].tolist())
+                    unassigned = all_task_ids - assigned_task_ids
+                    if unassigned:
+                        groups['Unassigned'] = list(unassigned)
+                else:
+                    # No activity codes - all activities are unassigned
+                    groups['Unassigned'] = workspace.activities_df['task_id'].tolist()
+            
+            # Build hierarchical items: summary bars + optional details
+            summary_id_counter = -1000  # Use negative IDs for synthetic summary items
+            
+            for group_name, task_ids in sorted(groups.items()):
+                if not task_ids:
+                    continue
+                    
+                # Get activities in this group
+                group_df = workspace.activities_df[workspace.activities_df['task_id'].isin(task_ids)]
+                
+                if group_df.empty:
+                    continue
+                
+                # Calculate summary bar dates (min start, max finish)
+                valid_starts = group_df['early_start'].dropna()
+                valid_finishes = group_df['early_finish'].dropna()
+                
+                if valid_starts.empty or valid_finishes.empty:
+                    continue
+                
+                summary_start = valid_starts.min()
+                summary_finish = valid_finishes.max()
+                summary_calendar_days = (summary_finish - summary_start).days + 1
+                
+                # Sum working days for summary
+                total_working_hours = group_df['target_drtn_hr_cnt'].fillna(0).sum()
+                summary_working_days = float(total_working_hours) / hours_per_day
+                
+                # Check if any child is critical
+                any_critical = group_df['is_critical'].any() if 'is_critical' in group_df.columns else False
+                
+                parent_id_str = f"summary-{summary_id_counter}"
+                
+                # Create summary item (Level 1)
+                summary_item = {
+                    'id': summary_id_counter,
+                    's_item_id': f"GRP-{group_name[:8].upper()}",
+                    's_item': group_name,
+                    'working_days': summary_working_days,
+                    'calendar_days': summary_calendar_days,
+                    'total_float': 0,  # Summary bars don't have float
+                    'start': summary_start.isoformat(),
+                    'finish': summary_finish.isoformat(),
+                    'is_critical': bool(any_critical),
+                    'wbs_path': '',
+                    'status': 'not_started',  # Could compute from children
+                    'level': 1,
+                    'is_summary': True,
+                    'parent_id': None,
+                    'children_count': len(task_ids),
+                    'group_name': group_name,
+                }
+                gantt_items.append(summary_item)
+                
+                # Add detail items (Level 2) if requested
+                if show_details:
+                    for _, row in group_df.iterrows():
+                        detail_item = build_activity_item(row, level=2, parent_id=parent_id_str)
+                        detail_item['group_name'] = group_name
+                        gantt_items.append(detail_item)
+                
+                summary_id_counter -= 1
+        else:
+            # No grouping - flat list (all Level 2)
+            for _, row in workspace.activities_df.iterrows():
+                gantt_items.append(build_activity_item(row))
         
         # Stream Gantt panel event to frontend
         gantt_event = {
@@ -175,8 +312,9 @@ async def calculate_gantt_ws(
                     'search_term': None,
                 },
                 'total_activities': len(workspace.activities_df),
-                'filtered_activities': len(gantt_items),
+                'filtered_activities': len([i for i in gantt_items if not i.get('is_summary')]),
                 'available_activity_codes': workspace.code_types_with_values,
+                'grouping': grouping_applied,
             }
         }
         
@@ -184,9 +322,16 @@ async def calculate_gantt_ws(
         if ctx.deps.gantt_event_queue is not None:
             ctx.deps.gantt_event_queue.append(gantt_event)
         
-        # Return minimal summary - full data already streamed to frontend via gantt_event
+        # Return summary message
         warning_note = f" ({len(result.warnings)} warnings)" if result.warnings else ""
-        return f"Gantt displayed: {len(gantt_items)} activities, {result.critical_path_length_days:.0f} day critical path{warning_note}"
+        grouping_note = f" grouped by {grouping_applied}" if grouping_applied else ""
+        summary_count = len([i for i in gantt_items if i.get('is_summary')])
+        detail_count = len([i for i in gantt_items if not i.get('is_summary')])
+        
+        if grouping_applied:
+            return f"Gantt displayed: {summary_count} groups, {detail_count} activities{grouping_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}"
+        else:
+            return f"Gantt displayed: {detail_count} activities, {result.critical_path_length_days:.0f} day critical path{warning_note}"
         
     except Exception as e:
         logfire.error("Error in calculate_gantt_ws", error=str(e))
@@ -276,7 +421,8 @@ async def add_activity_ws(
     task_name: str,
     original_duration_hours: int,
     wbs_id: int | None = None,
-    target_start_date: str | None = None
+    target_start_date: str | None = None,
+    activity_codes: dict[str, str] | None = None
 ) -> str:
     """Add a new activity to the schedule workspace.
     
@@ -291,6 +437,9 @@ async def add_activity_ws(
         original_duration_hours: Duration in hours (e.g., 40 for 5 days)
         wbs_id: WBS ID to assign the activity to (optional)
         target_start_date: Target start date in ISO format (optional)
+        activity_codes: Dict mapping code type name to code value (optional)
+                       Example: {"Phase": "Phase 1", "Discipline": "Civil"}
+                       Used for grouping activities in calculate_gantt_ws
     
     Returns:
         Confirmation with the new task_id assigned
@@ -338,10 +487,26 @@ async def add_activity_ws(
             pd.DataFrame([new_row])
         ], ignore_index=True)
         
+        # Add activity codes if provided (for grouping in calculate_gantt_ws)
+        if activity_codes:
+            code_rows = [
+                {
+                    'task_id': new_task_id,
+                    'code_type_name': code_type,
+                    'code_value_name': code_value
+                }
+                for code_type, code_value in activity_codes.items()
+            ]
+            workspace.activity_codes_df = pd.concat([
+                workspace.activity_codes_df,
+                pd.DataFrame(code_rows)
+            ], ignore_index=True)
+        
         workspace.is_modified = True
         
         # Include task_id - LLM needs it for add_relationship_ws
-        return f"Added '{task_code}' (task_id={new_task_id}, {original_duration_hours}h). Use task_id for relationships."
+        codes_info = f", codes={activity_codes}" if activity_codes else ""
+        return f"Added '{task_code}' (task_id={new_task_id}, {original_duration_hours}h{codes_info}). Use task_id for relationships."
         
     except Exception as e:
         logfire.error("Error in add_activity_ws", error=str(e))
@@ -549,3 +714,146 @@ async def hide_gantt_ws(ctx: RunContext[AgentDeps]) -> str:
     except Exception as e:
         logfire.error("Error in hide_gantt_ws", error=str(e))
         return f"Error hiding gantt panel: {str(e)}"
+
+
+@logfire.instrument("create_schedule_ws")
+async def create_schedule_ws(
+    ctx: RunContext[AgentDeps],
+    project_name: str,
+    project_start_date: str | None = None,
+    description: str | None = None
+) -> str:
+    """Create a new empty schedule workspace for draft planning.
+    
+    Use this tool to start building a schedule from scratch WITHOUT
+    creating anything in the P6 database. Perfect for:
+    - Draft schedules for review before committing to P6
+    - What-if analysis and exploration
+    - Building schedules collaboratively before approval
+    
+    The schedule exists only in the workspace until explicitly saved
+    to P6 using save_schedule_p6 (future capability).
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        project_name: Name for the new schedule (e.g., "2km Trail Construction")
+        project_start_date: Planned start date in ISO format (YYYY-MM-DD). 
+                           Used as reference for CPM calculation.
+        description: Optional description of the schedule purpose (stored for 
+                    future save to P6)
+    
+    Returns:
+        Confirmation that workspace is ready for adding activities
+    
+    Example workflow:
+        1. create_schedule_ws("2km Trail Construction", "2025-01-15")
+        2. add_activity_ws(...) - add activities
+        3. add_relationship_ws(...) - add dependencies
+        4. calculate_gantt_ws() - run CPM and view Gantt
+        5. (future) save_schedule_p6() - persist to P6 database
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        if not conversation_id:
+            return "Error: No conversation_id available. Cannot create workspace."
+        
+        # Check if workspace already exists
+        existing = schedule_state_manager.get(conversation_id)
+        if existing:
+            return (
+                f"A workspace already exists with {len(existing.activities_df)} activities "
+                f"(project: '{existing.project_name}'). "
+                "Use clear_schedule_ws first to start fresh, or continue adding to the existing schedule."
+            )
+        
+        # Parse project start date
+        project_start = None
+        if project_start_date:
+            try:
+                project_start = pd.to_datetime(project_start_date).date()
+            except Exception:
+                return f"Invalid date format: '{project_start_date}'. Use ISO format (YYYY-MM-DD)."
+        
+        # Create empty workspace using the state manager
+        workspace = schedule_state_manager.create_new(
+            conversation_id=conversation_id,
+            project_name=project_name
+        )
+        
+        # Set project start if provided (used by CPM calculation)
+        if project_start:
+            workspace.project_start = project_start
+        
+        # Store description as metadata for future P6 save
+        # The ScheduleWorkspace dataclass can be extended later to include this
+        # For now, we acknowledge it in the response
+        
+        logfire.info(
+            "Created new draft schedule workspace",
+            conversation_id=conversation_id,
+            project_name=project_name,
+            project_start=project_start_date,
+            has_description=bool(description)
+        )
+        
+        start_info = f" starting {project_start_date}" if project_start_date else ""
+        return (
+            f"Created draft schedule '{project_name}'{start_info}. "
+            "Add activities with add_activity_ws, then link them with add_relationship_ws. "
+            "Use calculate_gantt_ws to visualize and analyze the schedule."
+        )
+        
+    except Exception as e:
+        logfire.error("Error in create_schedule_ws", error=str(e))
+        return f"Error creating schedule workspace: {str(e)}"
+
+
+@logfire.instrument("clear_schedule_ws")
+async def clear_schedule_ws(ctx: RunContext[AgentDeps]) -> str:
+    """Clear the current schedule workspace to start fresh.
+    
+    Use this to discard all unsaved changes and start with an empty workspace.
+    This does NOT affect any data in P6 - only the in-memory draft is cleared.
+    
+    Warning: This action cannot be undone. All activities and relationships
+    in the current workspace will be lost.
+    
+    Returns:
+        Confirmation that workspace was cleared
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        if not conversation_id:
+            return "Error: No conversation_id available."
+        
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No active workspace to clear."
+        
+        activity_count = len(workspace.activities_df)
+        relationship_count = len(workspace.relationships_df)
+        project_name = workspace.project_name
+        source = workspace.source
+        
+        schedule_state_manager.clear(conversation_id)
+        
+        logfire.info(
+            "Cleared schedule workspace",
+            conversation_id=conversation_id,
+            project_name=project_name,
+            activity_count=activity_count,
+            relationship_count=relationship_count,
+            source=source
+        )
+        
+        source_info = "(loaded from P6)" if source == "p6_loaded" else "(draft)"
+        return (
+            f"Cleared workspace '{project_name}' {source_info} "
+            f"with {activity_count} activities and {relationship_count} relationships. "
+            "Ready for a new schedule."
+        )
+        
+    except Exception as e:
+        logfire.error("Error in clear_schedule_ws", error=str(e))
+        return f"Error clearing workspace: {str(e)}"

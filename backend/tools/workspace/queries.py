@@ -25,16 +25,17 @@ async def get_workspace_status_ws(ctx: RunContext[AgentDeps]) -> str:
             return "No schedule workspace active. Use load_schedule_ws to load a project."
         
         status_parts = [
-            f"Project: {workspace.project_id}",
+            f"Project: {workspace.project_name or workspace.project_id}",
+            f"Source: {workspace.source}",
             f"Activities: {len(workspace.activities_df)}",
             f"Relationships: {len(workspace.relationships_df)}",
             f"Modified: {workspace.is_modified}",
         ]
         
-        if workspace.calculation_result:
-            cp_count = len(workspace.calculation_result.get('critical_path', []))
+        if workspace.last_calculation_at:
+            cp_count = len(workspace.critical_path_ids)
             status_parts.append(f"Critical path activities: {cp_count}")
-            status_parts.append(f"Last calculated: Yes")
+            status_parts.append(f"Last calculated: {workspace.last_calculation_at.strftime('%H:%M')}")
         else:
             status_parts.append("Last calculated: No")
         

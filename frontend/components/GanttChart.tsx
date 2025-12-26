@@ -210,16 +210,25 @@ const GanttChart: React.FC<GanttChartProps> = ({ data, loading }) => {
                 title={`${item.s_item}
 Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
 End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
-Duration: ${item.total_duration} days`}
+Working Days: ${item.working_days}d
+Calendar Days: ${item.calendar_days}d
+Total Float: ${item.total_float}d`}
               >
-                {item.widthPercentage > 8 && (
+                {item.widthPercentage > 12 ? (
                   <span 
                     className="truncate px-1 gantt-duration-text"
                     style={{ color: 'inherit' }}
                   >
-                    {item.total_duration}d
+                    {item.working_days}d / {item.calendar_days}d
                   </span>
-                )}
+                ) : item.widthPercentage > 6 ? (
+                  <span 
+                    className="truncate px-1 gantt-duration-text"
+                    style={{ color: 'inherit' }}
+                  >
+                    {item.calendar_days}d
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>

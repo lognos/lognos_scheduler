@@ -9,14 +9,18 @@
  * A single activity/task in the Gantt chart
  */
 export interface ScheduleItem {
-  /** Internal database task ID */
+  /** Internal database task ID (negative for synthetic summary items) */
   id: number;
-  /** Activity code (e.g., "A1010") */
+  /** Activity code (e.g., "A1010") or group code for summaries */
   s_item_id: string;
-  /** Activity name/description */
+  /** Activity name/description or group name */
   s_item: string;
+  /** Duration in working days (planned hours / 8) */
+  working_days: number;
+  /** Duration in calendar days (finish - start + 1, includes weekends) */
+  calendar_days: number;
   /** Total float in work days */
-  total_duration: number;
+  total_float: number;
   /** Early start date (ISO format) */
   start: string;
   /** Early finish date (ISO format) */
@@ -27,6 +31,18 @@ export interface ScheduleItem {
   wbs_path: string;
   /** Activity status: not_started, in_progress, completed */
   status: 'not_started' | 'in_progress' | 'completed';
+  
+  // Hierarchy fields for grouped display
+  /** Display level: 1 = summary/group, 2 = detail activity */
+  level?: number;
+  /** Whether this is a summary bar spanning child activities */
+  is_summary?: boolean;
+  /** Parent summary item ID (for level 2 items) */
+  parent_id?: string | null;
+  /** Number of child activities (for summary items) */
+  children_count?: number;
+  /** Group name this item belongs to */
+  group_name?: string | null;
 }
 
 /**
@@ -73,6 +89,8 @@ export interface GanttChartData {
   filtered_activities: number;
   /** Available activity codes for filter UI */
   available_activity_codes: AvailableActivityCodes;
+  /** Current grouping applied (e.g., "Phase", "WBS", null) */
+  grouping?: string | null;
 }
 
 /**

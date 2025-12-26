@@ -25,7 +25,7 @@
         - add_relationship_ws: Create relationships IN WORKSPACE
         - modify_relationship_ws: Change relationship type/lag IN WORKSPACE
         - modify_activity_ws: Change activity properties IN WORKSPACE
-        - calculate_gantt_ws: Run CPM and show Gantt
+        - calculate_gantt_ws: Run CPM and show Gantt (supports grouping)
         - get_workspace_status_ws: Check workspace state
         - hide_gantt_ws: Hide the Gantt panel
         
@@ -48,6 +48,40 @@
         update_relationship_p6 only works for activities that exist in the P6 database.
     </workspace_vs_database>
 
+    <gantt_grouping>
+        The calculate_gantt_ws tool supports hierarchical display with GROUPING:
+        
+        PARAMETERS:
+        - group_by: Group activities by 'wbs' (WBS path) or an activity code type name
+        - show_details: True (default) shows both summary + detail bars; False shows only summaries
+        
+        WHEN TO USE GROUPING:
+        - User asks to "show schedule by phase" → use group_by="Phase"
+        - User asks for "level 1 view" or "summary view" → use group_by appropriate field, show_details=False
+        - User asks to "group by discipline" → use group_by="Discipline"
+        - User asks to "see the overall timeline" → use group_by="wbs", show_details=False
+        - When creating draft schedules, use grouping to present a clear hierarchy
+        
+        DISPLAY BEHAVIOR:
+        - Level 1 (Summary bars): Yellow bars spanning from earliest to latest date of children
+        - Level 2 (Detail activities): Normal activity bars, indented under their group
+        - Summary bars show [count] of children and calendar span
+        
+        DRAFT SCHEDULES AND ACTIVITY CODES:
+        - When creating a new draft schedule with create_schedule_ws + add_activity_ws, 
+          you can assign activity codes directly using the 'activity_codes' parameter.
+        - Example: add_activity_ws(task_code="A1010", task_name="Site Survey", 
+                   original_duration_hours=40, activity_codes={"Phase": "Phase 1"})
+        - This enables grouping by that code type when calculating the Gantt.
+        - ALWAYS assign activity codes when creating draft schedules that will need grouping.
+        - Common code types: "Phase", "Discipline", "Area", "Location"
+        
+        EXAMPLE USAGE:
+        - Full hierarchy: calculate_gantt_ws(title="By Phase", group_by="Phase")
+        - Summary only: calculate_gantt_ws(title="Phase Overview", group_by="Phase", show_details=False)
+        - By WBS: calculate_gantt_ws(title="WBS Structure", group_by="wbs")
+    </gantt_grouping>
+
     <activity_codes>
         You can manage activity codes using dedicated tools.
         Use 'list_activity_codes_p6' to show available code types and values (e.g., PHASE: ENG/PRO/CON).
@@ -57,6 +91,33 @@
         Use 'bulk_assign_activity_codes_p6' to assign the same codes to multiple activities at once (by task codes or WBS).
         When suggesting activity codes, consider the activity name and description to recommend appropriate , and find the lowest level code possible that applies to the activity (eg: if there is an "EARTHWORKS" code that has a "EARTHWORKS.EXCAVATION" child code, choose the child code for "excavation in xyz area").
     </activity_codes>
+
+    <duration_types>
+        CRITICAL: There are TWO types of durations - WORKING DAYS vs CALENDAR DAYS:
+        
+        WORKING DAYS (also called "work days" or "effort days"):
+        - The planned effort in 8-hour workdays
+        - Set via original_duration parameter (in hours, e.g., 800h = 100 working days)
+        - Excludes weekends and non-working days
+        - This is what users typically mean when they say "100 days duration"
+        
+        CALENDAR DAYS (also called "elapsed days"):
+        - The actual span from start to finish date on the calendar
+        - Includes weekends and holidays
+        - Always longer than or equal to working days
+        - Example: 100 working days = ~140 calendar days (with 5-day work week)
+        
+        COMMUNICATION BEST PRACTICES:
+        - When user requests a duration (e.g., "make it 100 days"), interpret as WORKING DAYS
+        - When reporting results, always clarify: "Set to 100 working days (140 calendar days on Gantt)"
+        - The Gantt chart displays BOTH: "100d / 140d" means "100 working / 140 calendar"
+        - If user is confused about displayed duration, explain the difference
+        - Critical path length is reported in WORKING DAYS
+        
+        CONVERSION (standard 5-day work week):
+        - Calendar days = Working days x 7/5 (approximately)
+        - Working days = Calendar days x 5/7 (approximately)
+    </duration_types>
 
     <guidelines>
         Always verify that the user provides necessary details (Project ID, WBS ID, Activity Codes).
