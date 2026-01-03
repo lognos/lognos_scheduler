@@ -808,6 +808,460 @@ async def create_schedule_ws(
         return f"Error creating schedule workspace: {str(e)}"
 
 
+@logfire.instrument("assign_activity_codes_ws")
+async def assign_activity_codes_ws(
+    ctx: RunContext[AgentDeps],
+    task_id: int,
+    code_assignments: dict[str, str]
+) -> str:
+    """Assign or modify activity codes for an activity in the workspace.
+    
+    Use this tool to categorize activities with codes like Phase, Discipline, Area, etc.
+    Each activity can have one code per code type - assigning a new code replaces
+    any existing value for that type.
+    
+    This modifies the workspace (in-memory) only. Changes are NOT saved to P6
+    until the schedule is persisted.
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        task_id: Task ID of the activity to assign codes to
+        code_assignments: Dict mapping code type name to code value name.
+                         Example: {"Activity_Type": "Stations construction", "Phase": "Phase 1"}
+                         Use the exact names as shown in the Gantt grouping options.
+    
+    Returns:
+        Summary of assigned and replaced codes
+    
+    Example:
+        assign_activity_codes_ws(task_id=12345, code_assignments={"Activity_Type": "Trail construction"})
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ws first."
+        
+        # Validate activity exists
+        if task_id not in workspace.activities_df['task_id'].values:
+            return f"Activity with task_id {task_id} not found in workspace."
+        
+        # Get activity info for response
+        task_mask = workspace.activities_df['task_id'] == task_id
+        task_code = workspace.activities_df.loc[task_mask, 'task_code'].values[0]
+        
+        assigned = []
+        replaced = []
+        errors = []
+        
+        for code_type, code_value in code_assignments.items():
+            # Validate code type exists
+            if workspace.code_types_with_values:
+                # Find matching code type (case-insensitive)
+                matching_type = None
+                for available_type in workspace.code_types_with_values.keys():
+                    if available_type.lower() == code_type.lower():
+                        matching_type = available_type
+                        break
+                
+                if not matching_type:
+                    available_types = list(workspace.code_types_with_values.keys())
+                    errors.append(f"Code type '{code_type}' not found. Available: {available_types}")
+                    continue
+                
+                # Validate code value exists for this type
+                available_values = workspace.code_types_with_values.get(matching_type, [])
+                matching_value = None
+                for available_value in available_values:
+                    if available_value.lower() == code_value.lower():
+                        matching_value = available_value
+                        break
+                
+                if not matching_value:
+                    errors.append(f"Code value '{code_value}' not found in type '{matching_type}'. Available: {available_values}")
+                    continue
+                
+                # Use the correctly-cased names
+                code_type = matching_type
+                code_value = matching_value
+            
+            # Check if this task already has a code for this type
+            existing_mask = (
+                (workspace.activity_codes_df['task_id'] == task_id) &
+                (workspace.activity_codes_df['code_type_name'] == code_type)
+            )
+            
+            if existing_mask.any():
+                # Get old value for reporting
+                old_value = workspace.activity_codes_df.loc[existing_mask, 'code_value_name'].values[0]
+                
+                if old_value != code_value:
+                    # Update existing assignment
+                    workspace.activity_codes_df.loc[existing_mask, 'code_value_name'] = code_value
+                    replaced.append({
+                        'code_type': code_type,
+                        'old_value': old_value,
+                        'new_value': code_value
+                    })
+                # else: same value, no change needed
+            else:
+                # Add new assignment
+                new_row = pd.DataFrame([{
+                    'task_id': task_id,
+                    'code_type_name': code_type,
+                    'code_value_name': code_value
+                }])
+                workspace.activity_codes_df = pd.concat([
+                    workspace.activity_codes_df,
+                    new_row
+                ], ignore_index=True)
+                assigned.append({
+                    'code_type': code_type,
+                    'code_value': code_value
+                })
+        
+        # Mark workspace as modified if any changes were made
+        if assigned or replaced:
+            workspace.mark_modified()
+        
+        # Build response
+        lines = [f"Activity code results for '{task_code}' (task_id={task_id}):", ""]
+        
+        if assigned:
+            lines.append("Assigned:")
+            for a in assigned:
+                lines.append(f"  - {a['code_type']}: {a['code_value']}")
+        
+        if replaced:
+            lines.append("")
+            lines.append("Replaced:")
+            for r in replaced:
+                lines.append(f"  - {r['code_type']}: {r['old_value']} -> {r['new_value']}")
+        
+        if errors:
+            lines.append("")
+            lines.append("Errors:")
+            for e in errors:
+                lines.append(f"  - {e}")
+        
+        if not assigned and not replaced and not errors:
+            lines.append("No changes made (values already match).")
+        
+        if assigned or replaced:
+            lines.append("")
+            lines.append("Run calculate_gantt_ws to see updated grouping.")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logfire.error("Error in assign_activity_codes_ws", error=str(e))
+        return f"Error assigning activity codes: {str(e)}"
+
+
+@logfire.instrument("bulk_assign_activity_codes_ws")
+async def bulk_assign_activity_codes_ws(
+    ctx: RunContext[AgentDeps],
+    task_ids: list[int],
+    code_assignments: dict[str, str]
+) -> str:
+    """Assign activity codes to multiple activities at once in the workspace.
+    
+    Use this tool for efficient bulk updates when multiple activities need
+    the same code assignments. Each activity can have one code per code type.
+    
+    This modifies the workspace (in-memory) only. Changes are NOT saved to P6
+    until the schedule is persisted.
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        task_ids: List of Task IDs to assign codes to
+        code_assignments: Dict mapping code type name to code value name.
+                         Example: {"Activity_Type": "Trail construction", "Phase": "Phase 1"}
+    
+    Returns:
+        Summary with counts of assigned/replaced codes
+    
+    Example:
+        bulk_assign_activity_codes_ws(
+            task_ids=[12345, 12346, 12347],
+            code_assignments={"Activity_Type": "Stations construction"}
+        )
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ws first."
+        
+        if not task_ids:
+            return "No task_ids provided."
+        
+        # Validate all activities exist
+        existing_task_ids = set(workspace.activities_df['task_id'].values)
+        missing = [tid for tid in task_ids if tid not in existing_task_ids]
+        if missing:
+            return f"Activities not found in workspace: {missing[:10]}{'...' if len(missing) > 10 else ''}"
+        
+        # Validate code types and values once
+        validated_assignments: dict[str, str] = {}
+        errors = []
+        
+        for code_type, code_value in code_assignments.items():
+            if workspace.code_types_with_values:
+                # Find matching code type (case-insensitive)
+                matching_type = None
+                for available_type in workspace.code_types_with_values.keys():
+                    if available_type.lower() == code_type.lower():
+                        matching_type = available_type
+                        break
+                
+                if not matching_type:
+                    available_types = list(workspace.code_types_with_values.keys())
+                    errors.append(f"Code type '{code_type}' not found. Available: {available_types}")
+                    continue
+                
+                # Validate code value exists for this type
+                available_values = workspace.code_types_with_values.get(matching_type, [])
+                matching_value = None
+                for available_value in available_values:
+                    if available_value.lower() == code_value.lower():
+                        matching_value = available_value
+                        break
+                
+                if not matching_value:
+                    errors.append(f"Code value '{code_value}' not found in type '{matching_type}'. Available: {available_values}")
+                    continue
+                
+                validated_assignments[matching_type] = matching_value
+            else:
+                # No validation data - accept as-is
+                validated_assignments[code_type] = code_value
+        
+        if errors:
+            return "Validation errors:\n" + "\n".join(f"  - {e}" for e in errors)
+        
+        # Apply assignments to all tasks
+        total_assigned = 0
+        total_replaced = 0
+        
+        for task_id in task_ids:
+            for code_type, code_value in validated_assignments.items():
+                # Check if this task already has a code for this type
+                existing_mask = (
+                    (workspace.activity_codes_df['task_id'] == task_id) &
+                    (workspace.activity_codes_df['code_type_name'] == code_type)
+                )
+                
+                if existing_mask.any():
+                    old_value = workspace.activity_codes_df.loc[existing_mask, 'code_value_name'].values[0]
+                    if old_value != code_value:
+                        workspace.activity_codes_df.loc[existing_mask, 'code_value_name'] = code_value
+                        total_replaced += 1
+                else:
+                    new_row = pd.DataFrame([{
+                        'task_id': task_id,
+                        'code_type_name': code_type,
+                        'code_value_name': code_value
+                    }])
+                    workspace.activity_codes_df = pd.concat([
+                        workspace.activity_codes_df,
+                        new_row
+                    ], ignore_index=True)
+                    total_assigned += 1
+        
+        # Mark workspace as modified
+        if total_assigned > 0 or total_replaced > 0:
+            workspace.mark_modified()
+        
+        codes_summary = ", ".join(f"{k}={v}" for k, v in validated_assignments.items())
+        return (
+            f"Bulk assignment completed for {len(task_ids)} activities:\n"
+            f"  Codes: {codes_summary}\n"
+            f"  New assignments: {total_assigned}\n"
+            f"  Replaced: {total_replaced}\n\n"
+            "Run calculate_gantt_ws to see updated grouping."
+        )
+        
+    except Exception as e:
+        logfire.error("Error in bulk_assign_activity_codes_ws", error=str(e))
+        return f"Error in bulk assignment: {str(e)}"
+
+
+@logfire.instrument("remove_activity_codes_ws")
+async def remove_activity_codes_ws(
+    ctx: RunContext[AgentDeps],
+    task_id: int,
+    code_type_names: list[str]
+) -> str:
+    """Remove activity code assignments from an activity in the workspace.
+    
+    Use this tool to unassign codes from an activity. Specify which code types
+    to remove (e.g., ['Phase', 'Discipline']).
+    
+    This modifies the workspace (in-memory) only. Changes are NOT saved to P6
+    until the schedule is persisted.
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        task_id: Task ID of the activity to remove codes from
+        code_type_names: List of code type names to remove (e.g., ['Activity_Type', 'Phase'])
+    
+    Returns:
+        Summary of removed codes and any code types that weren't assigned
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ws first."
+        
+        # Validate activity exists
+        if task_id not in workspace.activities_df['task_id'].values:
+            return f"Activity with task_id {task_id} not found in workspace."
+        
+        # Get activity info for response
+        task_mask = workspace.activities_df['task_id'] == task_id
+        task_code = workspace.activities_df.loc[task_mask, 'task_code'].values[0]
+        
+        removed = []
+        not_found = []
+        
+        for code_type in code_type_names:
+            # Find matching code type (case-insensitive)
+            matching_type = code_type
+            if workspace.code_types_with_values:
+                for available_type in workspace.code_types_with_values.keys():
+                    if available_type.lower() == code_type.lower():
+                        matching_type = available_type
+                        break
+            
+            # Find and remove the assignment
+            remove_mask = (
+                (workspace.activity_codes_df['task_id'] == task_id) &
+                (workspace.activity_codes_df['code_type_name'].str.lower() == matching_type.lower())
+            )
+            
+            if remove_mask.any():
+                removed_value = workspace.activity_codes_df.loc[remove_mask, 'code_value_name'].values[0]
+                workspace.activity_codes_df = workspace.activity_codes_df[~remove_mask]
+                removed.append({
+                    'code_type': matching_type,
+                    'removed_value': removed_value
+                })
+            else:
+                not_found.append(code_type)
+        
+        # Mark workspace as modified if any codes were removed
+        if removed:
+            workspace.mark_modified()
+        
+        # Build response
+        lines = [f"Removal results for '{task_code}' (task_id={task_id}):", ""]
+        
+        if removed:
+            lines.append("Removed:")
+            for r in removed:
+                lines.append(f"  - {r['code_type']}: {r['removed_value']}")
+        
+        if not_found:
+            lines.append("")
+            lines.append("Not found/not assigned:")
+            for nf in not_found:
+                lines.append(f"  - {nf}")
+        
+        if not removed and not not_found:
+            lines.append("No codes were removed.")
+        
+        if removed:
+            lines.append("")
+            lines.append("Run calculate_gantt_ws to see updated grouping.")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logfire.error("Error in remove_activity_codes_ws", error=str(e))
+        return f"Error removing activity codes: {str(e)}"
+
+
+@logfire.instrument("get_activity_codes_ws")
+async def get_activity_codes_ws(
+    ctx: RunContext[AgentDeps],
+    task_id: int | None = None
+) -> str:
+    """Get current activity code assignments in the workspace.
+    
+    Use this tool to see what codes are currently assigned to activities.
+    Can query a specific activity or get a summary of all codes.
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        task_id: Optional Task ID to get codes for. If None, returns summary of all codes.
+    
+    Returns:
+        Current activity code assignments
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ws first."
+        
+        if workspace.activity_codes_df.empty:
+            return "No activity codes assigned in workspace."
+        
+        if task_id is not None:
+            # Get codes for specific activity
+            if task_id not in workspace.activities_df['task_id'].values:
+                return f"Activity with task_id {task_id} not found in workspace."
+            
+            task_mask = workspace.activities_df['task_id'] == task_id
+            task_code = workspace.activities_df.loc[task_mask, 'task_code'].values[0]
+            task_name = workspace.activities_df.loc[task_mask, 'task_name'].values[0]
+            
+            codes_mask = workspace.activity_codes_df['task_id'] == task_id
+            codes = workspace.activity_codes_df[codes_mask]
+            
+            if codes.empty:
+                return f"Activity '{task_code}' ({task_name}) has no activity codes assigned."
+            
+            lines = [f"Activity codes for '{task_code}' ({task_name}):", ""]
+            for _, row in codes.iterrows():
+                lines.append(f"  - {row['code_type_name']}: {row['code_value_name']}")
+            
+            return "\n".join(lines)
+        else:
+            # Summary of all codes
+            code_summary = workspace.activity_codes_df.groupby('code_type_name')['code_value_name'].value_counts()
+            
+            lines = ["Activity code summary in workspace:", ""]
+            current_type = None
+            for (code_type, code_value), count in code_summary.items():
+                if code_type != current_type:
+                    if current_type is not None:
+                        lines.append("")
+                    lines.append(f"{code_type}:")
+                    current_type = code_type
+                lines.append(f"  - {code_value}: {count} activities")
+            
+            lines.append("")
+            lines.append(f"Total assignments: {len(workspace.activity_codes_df)}")
+            
+            # Also show available code types
+            if workspace.code_types_with_values:
+                lines.append("")
+                lines.append(f"Available code types: {list(workspace.code_types_with_values.keys())}")
+            
+            return "\n".join(lines)
+        
+    except Exception as e:
+        logfire.error("Error in get_activity_codes_ws", error=str(e))
+        return f"Error getting activity codes: {str(e)}"
+
+
 @logfire.instrument("clear_schedule_ws")
 async def clear_schedule_ws(ctx: RunContext[AgentDeps]) -> str:
     """Clear the current schedule workspace to start fresh.

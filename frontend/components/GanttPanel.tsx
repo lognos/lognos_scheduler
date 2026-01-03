@@ -54,8 +54,34 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
             return [];
         }
 
-        return data.items
-            .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+        // Sort items: when grouping is active, sort by group_name first, then summaries before details,
+        // then by start date within each group. This ensures proper visual hierarchy.
+        const sortedItems = [...data.items].sort((a, b) => {
+            // If grouping is active (items have group_name), respect the hierarchy
+            if (a.group_name !== undefined || b.group_name !== undefined) {
+                // First, sort by group_name (nulls/undefined last)
+                const groupA = a.group_name ?? '';
+                const groupB = b.group_name ?? '';
+                if (groupA !== groupB) {
+                    return groupA.localeCompare(groupB);
+                }
+                
+                // Within the same group, summaries come first
+                const summaryA = a.is_summary ? 0 : 1;
+                const summaryB = b.is_summary ? 0 : 1;
+                if (summaryA !== summaryB) {
+                    return summaryA - summaryB;
+                }
+                
+                // Within the same group and type, sort by start date
+                return new Date(a.start).getTime() - new Date(b.start).getTime();
+            }
+            
+            // No grouping: simple start date sort
+            return new Date(a.start).getTime() - new Date(b.start).getTime();
+        });
+
+        return sortedItems
             .map((item) => {
                 try {
                     const startDate = parseISO(item.start);

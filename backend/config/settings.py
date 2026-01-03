@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # AI
     GEMINI_API_KEY: str = Field(..., alias="GOOGLE_API_KEY", description="Google Gemini API Key")
-    GOOGLE_DEFAULT_MODEL: str = Field(default="google-gla:gemini-2.5-flash", description="Default Google AI Model")
+    GOOGLE_DEFAULT_MODEL: str = Field(default="google-gla:gemini-3-flash-preview", description="Default Google AI Model")
     LOGFIRE_TOKEN: str | None = Field(default=None, description="Logfire Write Token")
 
 settings = Settings()
