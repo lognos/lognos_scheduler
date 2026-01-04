@@ -302,63 +302,60 @@ class ListActivitiesRequest(BaseModel):
 
 
 # ============================================================================
-# Gantt Workspace Models
+# Workspace Request Models
 # ============================================================================
+# Naming convention: {Action}{Entity}WsRequest
+# All workspace tools should use these request models for consistency with P6 tools
 
-class LoadScheduleToWorkspaceRequest(BaseModel):
-    """Request to load a P6 schedule into the DataFrame workspace for visualization and calculations."""
+
+class LoadScheduleWsRequest(BaseModel):
+    """Request to load a P6 schedule into the workspace for analysis."""
     model_config = ConfigDict(strict=True)
     
-    conversation_id: StrictStr = Field(
-        ...,
-        description="Conversation ID for the workspace"
-    )
     proj_id: int = Field(
         ..., 
         description="Project ID to load schedule from"
     )
 
 
-class CalculateAndDisplayGanttRequest(BaseModel):
+class CreateScheduleWsRequest(BaseModel):
+    """Request to create a new empty schedule workspace for draft planning."""
+    model_config = ConfigDict(strict=True)
+    
+    project_name: StrictStr = Field(
+        ...,
+        description="Name for the new schedule (e.g., '2km Trail Construction')"
+    )
+    project_start_date: str | None = Field(
+        default=None,
+        description="Planned start date in ISO format (YYYY-MM-DD). Used as reference for CPM calculation."
+    )
+    description: str | None = Field(
+        default=None,
+        description="Optional description of the schedule purpose (stored for future save to P6)"
+    )
+
+
+class CalculateGanttWsRequest(BaseModel):
     """Request to run CPM calculations and display Gantt chart."""
     model_config = ConfigDict(strict=True)
     
-    conversation_id: StrictStr = Field(
-        ...,
-        description="Conversation ID for the workspace"
+    title: str = Field(
+        default="Schedule Analysis",
+        description="Title for the Gantt chart display"
     )
-    filter_activity_codes: dict[str, list[str]] | None = Field(
+    group_by: str | None = Field(
         default=None,
-        description="Filter by activity codes. Dict of {activity_code_type_name: [code_values]}. E.g., {'Phase': ['Phase 1'], 'Discipline': ['Civil', 'Electrical']}"
+        description="Optional grouping field. Use 'wbs' to group by WBS path, or an activity code type name (e.g., 'Phase', 'Discipline') to group activities by that code."
     )
-    filter_wbs: StrictStr | None = Field(
-        default=None,
-        description="Filter by WBS path"
-    )
-    filter_critical_only: bool = Field(
-        default=False,
-        description="Show only critical path activities"
-    )
-    filter_status: list[str] | None = Field(
-        default=None,
-        description="Filter by status list"
-    )
-    filter_search: StrictStr | None = Field(
-        default=None,
-        description="Search in task code/name"
-    )
-    filter_date_start: StrictStr | None = Field(
-        default=None,
-        description="Filter activities starting after this date (ISO format)"
-    )
-    filter_date_end: StrictStr | None = Field(
-        default=None,
-        description="Filter activities ending before this date (ISO format)"
+    show_details: bool = Field(
+        default=True,
+        description="If True (default), show both summary and detail activities. If False, show only summary level."
     )
 
 
-class ModifyActivityInWorkspaceRequest(BaseModel):
-    """Request to modify an activity in the workspace DataFrame."""
+class ModifyActivityWsRequest(BaseModel):
+    """Request to modify an activity in the workspace."""
     model_config = ConfigDict(strict=True)
     
     task_id: int = Field(
@@ -367,6 +364,7 @@ class ModifyActivityInWorkspaceRequest(BaseModel):
     )
     original_duration: int | None = Field(
         default=None,
+        ge=1,
         description="New original duration in hours"
     )
     target_start_date: str | None = Field(
@@ -383,21 +381,22 @@ class ModifyActivityInWorkspaceRequest(BaseModel):
     )
 
 
-class AddActivityToWorkspaceRequest(BaseModel):
-    """Request to add a new activity to the workspace DataFrame."""
+class AddActivityWsRequest(BaseModel):
+    """Request to add a new activity to the workspace."""
     model_config = ConfigDict(strict=True)
     
     task_code: StrictStr = Field(
         ..., 
-        description="Unique activity code for the new activity"
+        description="Unique activity code for the new activity (e.g., 'A1000')"
     )
     task_name: StrictStr = Field(
         ..., 
         description="Name of the new activity"
     )
     original_duration_hours: int = Field(
-        ..., 
-        description="Duration in hours (e.g., 40 for 5 days)"
+        ...,
+        ge=1,
+        description="Duration in hours (e.g., 40 for 5 days at 8h/day)"
     )
     wbs_id: int | None = Field(
         default=None,
@@ -407,9 +406,13 @@ class AddActivityToWorkspaceRequest(BaseModel):
         default=None,
         description="Target start date in ISO format (YYYY-MM-DD)"
     )
+    activity_codes: dict[str, str] | None = Field(
+        default=None,
+        description="Dict mapping code type name to code value for grouping. Example: {'Phase': 'Phase 1', 'Discipline': 'Civil'}"
+    )
 
 
-class AddRelationshipToWorkspaceRequest(BaseModel):
+class AddRelationshipWsRequest(BaseModel):
     """Request to add a relationship between activities in the workspace."""
     model_config = ConfigDict(strict=True)
     
@@ -421,7 +424,7 @@ class AddRelationshipToWorkspaceRequest(BaseModel):
         ..., 
         description="Task ID of the successor activity"
     )
-    relationship_type: str = Field(
+    relationship_type: Literal["FS", "SS", "FF", "SF"] = Field(
         default="FS",
         description="Relationship type: FS (Finish-to-Start), SS (Start-to-Start), FF (Finish-to-Finish), SF (Start-to-Finish)"
     )
@@ -429,3 +432,117 @@ class AddRelationshipToWorkspaceRequest(BaseModel):
         default=0,
         description="Lag time in hours (positive = delay, negative = lead)"
     )
+
+
+class ModifyRelationshipWsRequest(BaseModel):
+    """Request to modify an existing relationship in the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    predecessor_task_id: int = Field(
+        ..., 
+        description="Task ID of the predecessor activity"
+    )
+    successor_task_id: int = Field(
+        ..., 
+        description="Task ID of the successor activity"
+    )
+    new_relationship_type: Literal["FS", "SS", "FF", "SF"] | None = Field(
+        default=None,
+        description="New relationship type (FS, SS, FF, SF)"
+    )
+    new_lag_hours: int | None = Field(
+        default=None,
+        description="New lag in hours (positive = delay, negative = lead)"
+    )
+
+
+class DeleteRelationshipWsRequest(BaseModel):
+    """Request to delete a relationship from the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    predecessor_task_id: int = Field(
+        ..., 
+        description="Task ID of the predecessor activity"
+    )
+    successor_task_id: int = Field(
+        ..., 
+        description="Task ID of the successor activity"
+    )
+
+
+class DeleteActivityWsRequest(BaseModel):
+    """Request to delete an activity from the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    task_id: int = Field(
+        ..., 
+        description="Task ID of the activity to delete"
+    )
+
+
+# Workspace Activity Code Models
+
+class AssignActivityCodesWsRequest(BaseModel):
+    """Request to assign activity codes to an activity in the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    task_id: int = Field(
+        ..., 
+        description="Task ID of the activity to assign codes to"
+    )
+    code_assignments: dict[str, str] = Field(
+        ..., 
+        description="Dict mapping code type name to code value name. Example: {'Activity_Type': 'Stations construction', 'Phase': 'Phase 1'}"
+    )
+
+
+class BulkAssignActivityCodesWsRequest(BaseModel):
+    """Request to assign activity codes to multiple activities in the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    task_ids: list[int] = Field(
+        ..., 
+        min_length=1,
+        description="List of Task IDs to assign codes to"
+    )
+    code_assignments: dict[str, str] = Field(
+        ..., 
+        description="Dict mapping code type name to code value name. Example: {'Activity_Type': 'Trail construction', 'Phase': 'Phase 1'}"
+    )
+
+
+class RemoveActivityCodesWsRequest(BaseModel):
+    """Request to remove activity codes from an activity in the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    task_id: int = Field(
+        ..., 
+        description="Task ID of the activity to remove codes from"
+    )
+    code_type_names: list[str] = Field(
+        ..., 
+        min_length=1,
+        description="List of code type names to remove (e.g., ['Activity_Type', 'Phase'])"
+    )
+
+
+class GetActivityCodesWsRequest(BaseModel):
+    """Request to get current activity code assignments in the workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    task_id: int | None = Field(
+        default=None,
+        description="Optional Task ID to get codes for. If None, returns summary of all codes."
+    )
+
+
+# ============================================================================
+# Legacy Workspace Models (deprecated - kept for backward compatibility)
+# ============================================================================
+
+# These will be removed in a future version. Use the *WsRequest models above.
+LoadScheduleToWorkspaceRequest = LoadScheduleWsRequest
+CalculateAndDisplayGanttRequest = CalculateGanttWsRequest
+ModifyActivityInWorkspaceRequest = ModifyActivityWsRequest
+AddActivityToWorkspaceRequest = AddActivityWsRequest
+AddRelationshipToWorkspaceRequest = AddRelationshipWsRequest
