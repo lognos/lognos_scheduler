@@ -80,9 +80,9 @@ async def search_activities_p6(ctx: RunContext[AgentDeps], req: SearchActivityRe
             cursor.execute("SELECT TASK_CODE, TASK_NAME FROM TASK WHERE TASK_ID = ?", (task_id,))
             row = cursor.fetchone()
             if row:
-                response += f"- {row[0]}: {row[1]} (Score: {score:.2f})\n"
+                response += f"- {row[0]} (task_id={task_id}): {row[1]} (Score: {score:.2f})\n"
             else:
-                response += f"- ID {task_id} (Score: {score:.2f})\n"
+                response += f"- task_id={task_id} (Score: {score:.2f})\n"
                 
         return response
     except Exception as e:

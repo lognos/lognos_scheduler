@@ -1,4 +1,14 @@
 from pydantic_ai import Agent, UsageLimits
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    SystemPromptPart,
+    UserPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.settings import ModelSettings
 from backend.prompt.loader import PromptLoader
 from backend.tools import (
@@ -59,8 +69,80 @@ from backend.config.settings import settings
 SCHEDULING_USAGE_LIMITS = UsageLimits(
     request_limit=30,  # Maximum requests per run (increased for complex schedules)
     input_tokens_limit=500_000,  # Input token limit (Gemini 2.5 Flash supports 1M)
-    output_tokens_limit=16_000,  # Output token limit (increased for multi-activity creation)
+    output_tokens_limit=32_000,  # Output token limit (increased as safety net)
 )
+
+
+def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Remove tool calls and returns from historical messages to reduce token usage.
+    
+    This processor filters out ToolCallPart and ToolReturnPart from PAST conversation
+    turns, keeping only user prompts, system prompts, and final text responses.
+    
+    The current turn's tool calls are preserved because they're part of the active
+    agent run and are needed for the agentic loop to work correctly.
+    
+    This is critical because:
+    1. Tool returns (e.g., list_activities_p6) can be thousands of tokens
+    2. Each conversation turn accumulates more tool results
+    3. Without filtering, input context can grow to 100k+ tokens
+    4. Large contexts cause Gemini to generate extremely verbose responses (65k+ tokens)
+    """
+    if not messages:
+        return messages
+    
+    filtered: list[ModelMessage] = []
+    
+    # Get the run_id of the current (most recent) turn to preserve it
+    current_run_id = None
+    for msg in reversed(messages):
+        if hasattr(msg, 'run_id') and msg.run_id:
+            current_run_id = msg.run_id
+            break
+    
+    for msg in messages:
+        # Preserve current turn messages completely (needed for agentic loop)
+        if hasattr(msg, 'run_id') and msg.run_id == current_run_id:
+            filtered.append(msg)
+            continue
+        
+        # For historical messages, filter out tool-related parts
+        if isinstance(msg, ModelRequest):
+            # Keep only SystemPromptPart and UserPromptPart
+            filtered_parts = [
+                part for part in msg.parts
+                if isinstance(part, (SystemPromptPart, UserPromptPart))
+            ]
+            if filtered_parts:
+                # Create a new ModelRequest with only the filtered parts
+                # Note: ModelRequest doesn't have timestamp field
+                new_msg = ModelRequest(
+                    parts=filtered_parts,
+                    instructions=msg.instructions,
+                    run_id=msg.run_id,
+                )
+                filtered.append(new_msg)
+                
+        elif isinstance(msg, ModelResponse):
+            # Keep only TextPart responses (final answers, not tool calls)
+            filtered_parts = [
+                part for part in msg.parts
+                if isinstance(part, TextPart)
+            ]
+            if filtered_parts:
+                # Create a new ModelResponse with only the filtered parts
+                new_msg = ModelResponse(
+                    parts=filtered_parts,
+                    model_name=msg.model_name,
+                    timestamp=msg.timestamp,
+                    run_id=msg.run_id,
+                )
+                filtered.append(new_msg)
+        else:
+            # Keep any other message types as-is
+            filtered.append(msg)
+    
+    return filtered
 
 # Define the Agent with structured output
 scheduling_agent = Agent(
@@ -71,6 +153,7 @@ scheduling_agent = Agent(
     model_settings=ModelSettings(
         temperature=0.3,  # Lower temperature for more consistent responses
     ),
+    history_processors=[filter_tool_history],  # Filter tool calls from history to reduce tokens
     system_prompt=PromptLoader.get_prompt("scheduler_system.xml.j2"),
     tools=[
         # P6 Query tools
