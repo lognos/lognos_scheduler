@@ -337,7 +337,7 @@ class CreateScheduleWsRequest(BaseModel):
 
 
 class CalculateGanttWsRequest(BaseModel):
-    """Request to run CPM calculations and display Gantt chart."""
+    """Request to run CPM calculations and display Gantt chart with optional grouping and filtering."""
     model_config = ConfigDict(strict=True)
     
     title: str = Field(
@@ -352,6 +352,41 @@ class CalculateGanttWsRequest(BaseModel):
         default=True,
         description="If True (default), show both summary and detail activities. If False, show only summary level."
     )
+    
+    # Filter parameters
+    activity_codes: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "Filter by activity codes. Dict mapping code type name to list of values. "
+            "Example: {'Discipline': ['Mechanical', 'Electrical'], 'Phase': ['Construction']}. "
+            "Logic: AND between code types, OR within values."
+        )
+    )
+    date_start: str | None = Field(
+        default=None,
+        description="Filter activities starting on or after this date (ISO format: YYYY-MM-DD)"
+    )
+    date_end: str | None = Field(
+        default=None,
+        description="Filter activities finishing on or before this date (ISO format: YYYY-MM-DD)"
+    )
+    critical_only: bool = Field(
+        default=False,
+        description="If True, show only critical path activities"
+    )
+    status: list[str] | None = Field(
+        default=None,
+        description="Filter by status: ['not_started', 'in_progress', 'completed']. Default shows all."
+    )
+    search_term: str | None = Field(
+        default=None,
+        description="Search term to filter by activity code or name (case-insensitive partial match)"
+    )
+    wbs_path: str | None = Field(
+        default=None,
+        description="Filter by WBS path prefix (e.g., 'Project/Phase1/Civil')"
+    )
+
 
 
 class ModifyActivityWsRequest(BaseModel):

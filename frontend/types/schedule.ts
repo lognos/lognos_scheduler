@@ -31,7 +31,7 @@ export interface ScheduleItem {
   wbs_path: string;
   /** Activity status: not_started, in_progress, completed */
   status: 'not_started' | 'in_progress' | 'completed';
-  
+
   // Hierarchy fields for grouped display
   /** Display level: 1 = summary/group, 2 = detail activity */
   level?: number;
@@ -59,6 +59,10 @@ export interface GanttFilter {
   status?: string[];
   /** Text search term */
   search_term?: string;
+  /** Start date filter (ISO format: YYYY-MM-DD) */
+  date_start?: string;
+  /** End date filter (ISO format: YYYY-MM-DD) */
+  date_end?: string;
 }
 
 /**

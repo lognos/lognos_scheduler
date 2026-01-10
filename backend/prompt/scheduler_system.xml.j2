@@ -82,6 +82,45 @@
         - By WBS: calculate_gantt_ws(title="WBS Structure", group_by="wbs")
     </gantt_grouping>
 
+    <gantt_filtering>
+        The calculate_gantt_ws tool supports FILTERING to show subsets of activities:
+        
+        FILTER PARAMETERS:
+        - activity_codes: Dict of code type → list of values. Example: {"Discipline": ["Mechanical", "Electrical"]}
+        - date_start: Show activities starting on or after this date (YYYY-MM-DD)
+        - date_end: Show activities finishing on or before this date (YYYY-MM-DD)
+        - critical_only: True to show only critical path activities
+        - status: List of statuses: ["not_started", "in_progress", "completed"]
+        - search_term: Text search in activity code or name
+        - wbs_path: Filter by WBS path prefix
+        
+        FILTER LOGIC:
+        - AND between different filter types (all must match)
+        - OR within activity_codes values (any value matches)
+        - Example: {activity_codes: {"Discipline": ["Mechanical"]}, critical_only: True}
+          → Shows activities that are BOTH Mechanical AND on critical path
+        
+        COMPOUND FILTERING (key behavior):
+        - Filters and grouping work together - apply multiple filters in one call
+        - When user requests additional filters, COMBINE with existing context
+        - Example conversation:
+          1. User: "group by discipline" → group_by="Discipline"
+          2. User: "show only mechanical" → group_by="Discipline", activity_codes={"Discipline": ["Mechanical"]}
+          3. User: "within next two months" → Add date_end filter while preserving above
+        
+        WHEN TO USE FILTERING:
+        - User asks to "show only X activities" → Use activity_codes or search_term
+        - User mentions "critical path only" → Use critical_only=True
+        - User specifies date range like "next 2 months" or "Q1 2026" → Use date_start/date_end
+        - User asks for specific status like "in-progress activities" → Use status filter
+        
+        EXAMPLE USAGE:
+        - By code: calculate_gantt_ws(group_by="Discipline", activity_codes={"Discipline": ["Mechanical"]})
+        - Date range: calculate_gantt_ws(date_start="2026-01-01", date_end="2026-03-31")
+        - Critical only: calculate_gantt_ws(critical_only=True, group_by="Phase")
+        - Combined: calculate_gantt_ws(group_by="Discipline", activity_codes={"Discipline": ["Mechanical"]}, date_end="2026-03-09", critical_only=True)
+    </gantt_filtering>
+
     <activity_codes>
         You can manage activity codes using dedicated tools.
         Use 'list_activity_codes_p6' to show available code types and values (e.g., PHASE: ENG/PRO/CON).

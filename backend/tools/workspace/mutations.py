@@ -158,6 +158,31 @@ async def calculate_gantt_ws(
             critical_path_ids=result.critical_path_ids
         )
         
+        # Apply filters BEFORE building Gantt items
+        # This uses the existing filter_activities method which handles all filter logic
+        has_filters = any([
+            req.activity_codes,
+            req.date_start,
+            req.date_end,
+            req.critical_only,
+            req.status,
+            req.search_term,
+            req.wbs_path
+        ])
+        
+        if has_filters:
+            filtered_df = workspace.filter_activities(
+                activity_codes=req.activity_codes,
+                date_start=req.date_start,
+                date_end=req.date_end,
+                critical_only=req.critical_only,
+                status=req.status,
+                search_term=req.search_term,
+                wbs_path=req.wbs_path
+            )
+        else:
+            filtered_df = workspace.activities_df
+        
         # Build Gantt data for frontend
         hours_per_day = 8.0  # Standard P6 calendar assumption
         
@@ -195,13 +220,14 @@ async def calculate_gantt_ws(
         gantt_items = []
         grouping_applied = None
         
+        # Use filtered_df for all grouping and item building
         if req.group_by:
             # Determine grouping source
             if req.group_by.lower() == 'wbs':
                 # Group by WBS path (use first segment as group)
                 grouping_applied = 'WBS'
                 groups: dict[str, list[int]] = {}
-                for _, row in workspace.activities_df.iterrows():
+                for _, row in filtered_df.iterrows():
                     wbs_path = row.get('wbs_path', '') or ''
                     # Use first WBS segment as group, or "Ungrouped" if empty
                     group_key = wbs_path.split('/')[0] if wbs_path else 'Ungrouped'
@@ -218,22 +244,26 @@ async def calculate_gantt_ws(
                     code_mask = workspace.activity_codes_df['code_type_name'].str.lower() == req.group_by.lower()
                     codes_for_type = workspace.activity_codes_df[code_mask]
                     
+                    # Only include activities that are in the filtered set
+                    filtered_task_ids = set(filtered_df['task_id'].tolist())
+                    
                     for _, code_row in codes_for_type.iterrows():
-                        group_key = code_row.get('code_value_name', 'Unknown')
                         task_id = int(code_row['task_id'])
+                        if task_id not in filtered_task_ids:
+                            continue  # Skip activities not in filtered set
+                        group_key = code_row.get('code_value_name', 'Unknown')
                         if group_key not in groups:
                             groups[group_key] = []
                         groups[group_key].append(task_id)
                     
-                    # Find activities without this code type
+                    # Find filtered activities without this code type
                     assigned_task_ids = set(codes_for_type['task_id'].tolist())
-                    all_task_ids = set(workspace.activities_df['task_id'].tolist())
-                    unassigned = all_task_ids - assigned_task_ids
+                    unassigned = filtered_task_ids - assigned_task_ids
                     if unassigned:
                         groups['Unassigned'] = list(unassigned)
                 else:
-                    # No activity codes - all activities are unassigned
-                    groups['Unassigned'] = workspace.activities_df['task_id'].tolist()
+                    # No activity codes - all filtered activities are unassigned
+                    groups['Unassigned'] = filtered_df['task_id'].tolist()
             
             # Build hierarchical items: summary bars + optional details
             summary_id_counter = -1000  # Use negative IDs for synthetic summary items
@@ -242,8 +272,8 @@ async def calculate_gantt_ws(
                 if not task_ids:
                     continue
                     
-                # Get activities in this group
-                group_df = workspace.activities_df[workspace.activities_df['task_id'].isin(task_ids)]
+                # Get activities in this group from filtered DataFrame
+                group_df = filtered_df[filtered_df['task_id'].isin(task_ids)]
                 
                 if group_df.empty:
                     continue
@@ -298,8 +328,8 @@ async def calculate_gantt_ws(
                 
                 summary_id_counter -= 1
         else:
-            # No grouping - flat list (all Level 2)
-            for _, row in workspace.activities_df.iterrows():
+            # No grouping - flat list (all Level 2) from filtered DataFrame
+            for _, row in filtered_df.iterrows():
                 gantt_items.append(build_activity_item(row))
         
         # Stream Gantt panel event to frontend
@@ -312,14 +342,16 @@ async def calculate_gantt_ws(
                 'project_finish': result.project_finish.isoformat(),
                 'critical_path_length': result.critical_path_length_days,
                 'filter_applied': {
-                    'wbs_path': None,
-                    'critical_only': False,
-                    'activity_codes': None,
-                    'status': None,
-                    'search_term': None,
+                    'wbs_path': req.wbs_path,
+                    'critical_only': req.critical_only,
+                    'activity_codes': req.activity_codes,
+                    'status': req.status,
+                    'search_term': req.search_term,
+                    'date_start': req.date_start,
+                    'date_end': req.date_end,
                 },
                 'total_activities': len(workspace.activities_df),
-                'filtered_activities': len([i for i in gantt_items if not i.get('is_summary')]),
+                'filtered_activities': len(filtered_df),
                 'available_activity_codes': workspace.code_types_with_values,
                 'grouping': grouping_applied,
             }
@@ -335,10 +367,30 @@ async def calculate_gantt_ws(
         summary_count = len([i for i in gantt_items if i.get('is_summary')])
         detail_count = len([i for i in gantt_items if not i.get('is_summary')])
         
+        # Build filter note for response
+        filter_parts = []
+        if req.activity_codes:
+            for code_type, values in req.activity_codes.items():
+                filter_parts.append(f"{code_type}={','.join(values)}")
+        if req.critical_only:
+            filter_parts.append("critical only")
+        if req.status:
+            filter_parts.append(f"status={','.join(req.status)}")
+        if req.date_start or req.date_end:
+            date_range = f"{req.date_start or 'start'} to {req.date_end or 'end'}"
+            filter_parts.append(f"dates: {date_range}")
+        if req.search_term:
+            filter_parts.append(f"search: '{req.search_term}'")
+        if req.wbs_path:
+            filter_parts.append(f"WBS: {req.wbs_path}")
+        
+        filter_note = f" filtered by [{', '.join(filter_parts)}]" if filter_parts else ""
+        total_note = f" ({len(filtered_df)} of {len(workspace.activities_df)} total)" if has_filters else ""
+        
         if grouping_applied:
-            return f"Gantt displayed: {summary_count} groups, {detail_count} activities{grouping_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}"
+            return f"Gantt displayed: {summary_count} groups, {detail_count} activities{grouping_note}{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}"
         else:
-            return f"Gantt displayed: {detail_count} activities, {result.critical_path_length_days:.0f} day critical path{warning_note}"
+            return f"Gantt displayed: {detail_count} activities{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}"
         
     except Exception as e:
         logfire.error("Error in calculate_gantt_ws", error=str(e))
