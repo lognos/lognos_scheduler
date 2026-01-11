@@ -31,6 +31,13 @@ async def create_activity_p6(ctx: RunContext[AgentDeps], req: ActivityCreateRequ
         Success message with the created task code and internal task_id.
     """
     try:
+        # Idempotency check: does activity already exist?
+        existing_task_id = ctx.deps.service.repo.get_task_id_by_code(
+            ctx.deps.conn, req.task_code, req.proj_id
+        )
+        if existing_task_id:
+            return f"Activity '{req.task_code}' already exists (task_id={existing_task_id}). No action taken."
+        
         task_id = ctx.deps.service.create_activity(req, conn=ctx.deps.conn)
         ctx.deps.mark_modified()  # Mark transaction as modified for backup
         return f"Successfully created activity '{req.task_code}' ({req.task_name}) with internal ID {task_id}."

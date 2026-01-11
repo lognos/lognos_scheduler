@@ -32,10 +32,32 @@ async def create_relationship_p6(ctx: RunContext[AgentDeps], req: RelationshipCr
         ModelRetry: If either activity not found (use search_activities_p6 to find codes).
     """
     try:
+        # Get task IDs for idempotency check
+        pred_id = ctx.deps.service.repo.get_task_id_by_code(
+            ctx.deps.conn, req.pred_task_code, req.proj_id
+        )
+        succ_id = ctx.deps.service.repo.get_task_id_by_code(
+            ctx.deps.conn, req.succ_task_code, req.proj_id
+        )
+        
+        if not pred_id:
+            raise ModelRetry(f"Predecessor '{req.pred_task_code}' not found. Use search_activities_p6 to verify task codes.")
+        if not succ_id:
+            raise ModelRetry(f"Successor '{req.succ_task_code}' not found. Use search_activities_p6 to verify task codes.")
+        
+        # Idempotency check: does relationship already exist?
+        existing_rel_id = ctx.deps.service.repo.get_relationship_id(
+            ctx.deps.conn, pred_id, succ_id
+        )
+        if existing_rel_id:
+            return f"Relationship {req.pred_task_code} -> {req.succ_task_code} already exists. No action taken."
+        
         ctx.deps.service.create_relationship(req, conn=ctx.deps.conn)
         ctx.deps.mark_modified()  # Mark transaction as modified for backup
         lag_info = f" with lag {req.lag}h" if req.lag else ""
         return f"Successfully linked {req.pred_task_code} -> {req.succ_task_code} ({req.pred_type}){lag_info}."
+    except ModelRetry:
+        raise  # Re-raise ModelRetry as-is
     except ValueError as e:
         raise ModelRetry(f"Cannot create relationship: {e}. Use search_activities_p6 to verify task codes.")
     except Exception as e:

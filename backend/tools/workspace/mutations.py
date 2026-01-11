@@ -1220,3 +1220,147 @@ async def clear_schedule_ws(ctx: RunContext[AgentDeps]) -> str:
     except Exception as e:
         logfire.error("Error in clear_schedule_ws", error=str(e))
         return f"Error clearing workspace: {str(e)}"
+
+
+@logfire.instrument("delete_relationship_ws")
+async def delete_relationship_ws(
+    ctx: RunContext[AgentDeps],
+    req: DeleteRelationshipWsRequest
+) -> str:
+    """Delete a relationship between activities in the workspace.
+    
+    Use this tool to remove a dependency link between two activities.
+    This is a temporary change - it does not affect the P6 database.
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        req: Request containing predecessor_task_id and successor_task_id
+    
+    Returns:
+        Confirmation of the deleted relationship
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ws first."
+        
+        # Find the relationship
+        rel_mask = (
+            (workspace.relationships_df['pred_task_id'] == req.predecessor_task_id) &
+            (workspace.relationships_df['task_id'] == req.successor_task_id)
+        )
+        
+        if not rel_mask.any():
+            return f"No relationship found from task_id {req.predecessor_task_id} to task_id {req.successor_task_id}."
+        
+        # Get activity names for confirmation message
+        pred_name = workspace.activities_df.loc[
+            workspace.activities_df['task_id'] == req.predecessor_task_id, 'task_name'
+        ]
+        succ_name = workspace.activities_df.loc[
+            workspace.activities_df['task_id'] == req.successor_task_id, 'task_name'
+        ]
+        pred_name = pred_name.values[0] if len(pred_name) > 0 else str(req.predecessor_task_id)
+        succ_name = succ_name.values[0] if len(succ_name) > 0 else str(req.successor_task_id)
+        
+        # Get relationship type for confirmation
+        rel_type = workspace.relationships_df.loc[rel_mask, 'pred_type'].values[0]
+        rel_type_display = rel_type.replace('PR_', '') if rel_type.startswith('PR_') else rel_type
+        
+        # Remove the relationship
+        workspace.relationships_df = workspace.relationships_df[~rel_mask]
+        workspace.is_modified = True
+        
+        logfire.info(
+            "Deleted relationship from workspace",
+            conversation_id=conversation_id,
+            pred_task_id=req.predecessor_task_id,
+            succ_task_id=req.successor_task_id,
+            relationship_type=rel_type_display
+        )
+        
+        return f"Deleted {rel_type_display} relationship: {pred_name} -> {succ_name}. Run calculate_gantt_ws to see impact."
+        
+    except Exception as e:
+        logfire.error("Error in delete_relationship_ws", error=str(e))
+        return f"Error deleting relationship: {str(e)}"
+
+
+@logfire.instrument("delete_activity_ws")
+async def delete_activity_ws(
+    ctx: RunContext[AgentDeps],
+    req: DeleteActivityWsRequest
+) -> str:
+    """Delete an activity from the schedule workspace.
+    
+    Use this tool to remove an activity and all its relationships from the workspace.
+    This is a temporary change - it does not affect the P6 database.
+    
+    Note: Any relationships where this activity is predecessor or successor
+    will also be automatically removed.
+    
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        req: Request containing task_id of the activity to delete
+    
+    Returns:
+        Confirmation of the deleted activity and relationships
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+        
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ws first."
+        
+        # Find the activity
+        activity_mask = workspace.activities_df['task_id'] == req.task_id
+        
+        if not activity_mask.any():
+            return f"Activity with task_id {req.task_id} not found in workspace."
+        
+        # Get activity info for confirmation message
+        task_code = workspace.activities_df.loc[activity_mask, 'task_code'].values[0]
+        task_name = workspace.activities_df.loc[activity_mask, 'task_name'].values[0]
+        
+        # Find and count relationships to remove
+        pred_mask = workspace.relationships_df['pred_task_id'] == req.task_id
+        succ_mask = workspace.relationships_df['task_id'] == req.task_id
+        rel_mask = pred_mask | succ_mask
+        removed_rel_count = rel_mask.sum()
+        
+        # Remove relationships connected to this activity
+        if removed_rel_count > 0:
+            workspace.relationships_df = workspace.relationships_df[~rel_mask]
+        
+        # Remove activity codes for this activity
+        if not workspace.activity_codes_df.empty:
+            code_mask = workspace.activity_codes_df['task_id'] == req.task_id
+            removed_code_count = code_mask.sum()
+            if removed_code_count > 0:
+                workspace.activity_codes_df = workspace.activity_codes_df[~code_mask]
+        else:
+            removed_code_count = 0
+        
+        # Remove the activity
+        workspace.activities_df = workspace.activities_df[~activity_mask]
+        workspace.is_modified = True
+        
+        logfire.info(
+            "Deleted activity from workspace",
+            conversation_id=conversation_id,
+            task_id=req.task_id,
+            task_code=task_code,
+            task_name=task_name,
+            removed_relationships=removed_rel_count,
+            removed_codes=removed_code_count
+        )
+        
+        rel_info = f" and {removed_rel_count} relationship(s)" if removed_rel_count > 0 else ""
+        return f"Deleted activity '{task_code}' ({task_name}){rel_info}. Run calculate_gantt_ws to see impact."
+        
+    except Exception as e:
+        logfire.error("Error in delete_activity_ws", error=str(e))
+        return f"Error deleting activity: {str(e)}"

@@ -24,6 +24,16 @@ async def create_project_p6(ctx: RunContext[AgentDeps], req: ProjectCreateReques
         Success message with the new project ID and root WBS ID.
     """
     try:
+        # Idempotency check: does project already exist?
+        cursor = ctx.deps.conn.cursor()
+        cursor.execute(
+            "SELECT PROJ_ID FROM PROJECT WHERE PROJ_SHORT_NAME = ?",
+            (req.project_short_name,)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            return f"Project '{req.project_short_name}' already exists (proj_id={existing[0]}). No action taken."
+        
         proj_id, wbs_id = ctx.deps.service.create_project(req, conn=ctx.deps.conn)
         ctx.deps.mark_modified()  # Mark transaction as modified for backup
         return f"Successfully created project '{req.project_short_name}' ({req.project_name}) with ID {proj_id}. Root WBS ID: {wbs_id}."

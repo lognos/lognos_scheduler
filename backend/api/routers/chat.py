@@ -19,7 +19,7 @@ from pydantic_ai.messages import (
 import logfire
 
 from backend.agents.scheduling_agent import scheduling_agent, SCHEDULING_USAGE_LIMITS
-from backend.tools.p6_tools import AgentDeps
+from backend.tools._base import AgentDeps
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
 from backend.utils.safe_db import SafeP6Transaction

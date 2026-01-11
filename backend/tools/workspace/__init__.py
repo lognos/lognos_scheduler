@@ -18,6 +18,8 @@ from backend.tools.workspace.mutations import (
     add_activity_ws,
     add_relationship_ws,
     modify_relationship_ws,
+    delete_relationship_ws,
+    delete_activity_ws,
     hide_gantt_ws,
     # Activity code tools
     assign_activity_codes_ws,
@@ -39,6 +41,8 @@ __all__ = [
     "add_activity_ws",
     "add_relationship_ws",
     "modify_relationship_ws",
+    "delete_relationship_ws",
+    "delete_activity_ws",
     "hide_gantt_ws",
     # Mutations - Activity codes
     "assign_activity_codes_ws",

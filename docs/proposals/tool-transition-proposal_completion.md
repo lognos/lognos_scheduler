@@ -1,31 +1,38 @@
 # Tool Architecture Transition Completion Proposal
 
-**Status:** Proposal  
+**Status:** In Progress  
 **Date:** 2026-01-04  
+**Updated:** 2026-01-10  
 **Relates to:** [tool-architecture-proposal.md](tool-architecture-proposal.md)
 
 ---
 
 ## Executive Summary
 
-This proposal completes the tool architecture transition outlined in the original proposal. The modular structure (`p6/`, `workspace/`, `indexing/`) is already in place, but several gaps remain for production readiness:
+This proposal completes the tool architecture transition outlined in the original proposal. The modular structure (`p6/`, `workspace/`, `indexing/`) is already in place.
 
-1. Legacy `p6_tools.py` still exists alongside new structure
-2. Workspace tools use individual parameters instead of Pydantic models
-3. Missing workspace tools (`delete_*_ws`)
-4. No idempotency guards on create operations
-5. No standardized tool creation process
+### Completed Items ✅
+1. ~~Workspace tools use individual parameters instead of Pydantic models~~ → All workspace tools now use Pydantic request models
+2. ~~Legacy `AgentDeps` import in `chat.py`~~ → Fixed to import from `_base.py`
+
+### Remaining Gaps
+1. Legacy `p6_tools.py` still exists (can be removed after validation)
+2. Missing workspace tools (`delete_activity_ws`, `delete_relationship_ws`)
+3. No idempotency guards on P6 create operations
+4. System prompt needs updating for new tools
 
 ---
 
-## 1. Parameter Standardization: Pydantic Request Models
+## 1. Parameter Standardization: Pydantic Request Models ✅ COMPLETE
 
-### Current State Gap
+### Current State (Updated 2026-01-10)
 
-| Tool Type | Parameter Style | Example |
-|-----------|-----------------|---------|
-| P6 tools | ✅ Pydantic request models | `create_activity_p6(ctx, req: ActivityCreateRequest)` |
-| Workspace tools | ❌ Individual parameters | `add_activity_ws(ctx, task_code: str, task_name: str, ...)` |
+| Tool Type | Parameter Style | Status |
+|-----------|-----------------|--------|
+| P6 tools | ✅ Pydantic request models | Done |
+| Workspace tools | ✅ Pydantic request models | Done |
+
+All workspace tools now use Pydantic request models with the `*WsRequest` naming convention.
 
 ### Why Pydantic Models Are Better
 
@@ -35,69 +42,21 @@ This proposal completes the tool architecture transition outlined in the origina
 4. **Consistent serialization**: LLMs receive identical schema patterns
 5. **Testability**: Request objects are easier to construct in tests
 
-### Standard Pattern
+### Implemented Request Models
 
-```python
-# backend/models/io.py - Request model definition
-class AddActivityWsRequest(BaseModel):
-    """Request to add an activity to the workspace."""
-    model_config = ConfigDict(strict=True)
-    
-    task_code: StrictStr = Field(
-        ..., 
-        description="Unique activity code for the new activity"
-    )
-    task_name: StrictStr = Field(
-        ..., 
-        description="Name of the new activity"
-    )
-    original_duration_hours: int = Field(
-        ..., 
-        ge=1,
-        description="Duration in hours (e.g., 40 for 5 days)"
-    )
-    wbs_id: int | None = Field(
-        default=None,
-        description="Optional WBS ID to assign the activity to"
-    )
-    target_start_date: str | None = Field(
-        default=None,
-        description="Target start date in ISO format (YYYY-MM-DD)",
-        pattern=r"^\d{4}-\d{2}-\d{2}$"  # Validates format
-    )
-    activity_codes: dict[str, str] | None = Field(
-        default=None,
-        description="Optional dict mapping code type to value for grouping"
-    )
-
-# backend/tools/workspace/mutations.py - Tool function
-@logfire.instrument("add_activity_ws")
-async def add_activity_ws(
-    ctx: RunContext[AgentDeps], 
-    req: AddActivityWsRequest
-) -> str:
-    """Add a new activity to the schedule workspace..."""
-    # Implementation uses req.task_code, req.task_name, etc.
-```
-
-### Request Models to Create
-
-> [!IMPORTANT]
-> Request models already exist in `io.py` for workspace tools but are **not used**. These should be refactored to match the naming convention and then applied:
-
-| Tool | New Request Model | Notes |
-|------|-------------------|-------|
-| `load_schedule_ws` | `LoadScheduleWsRequest` | Currently uses `proj_id: int` only |
-| `calculate_gantt_ws` | `CalculateGanttWsRequest` | Rename from `CalculateAndDisplayGanttRequest` |
-| `modify_activity_ws` | `ModifyActivityWsRequest` | Rename from `ModifyActivityInWorkspaceRequest` |
-| `add_activity_ws` | `AddActivityWsRequest` | Rename from `AddActivityToWorkspaceRequest` |
-| `add_relationship_ws` | `AddRelationshipWsRequest` | Rename from `AddRelationshipToWorkspaceRequest` |
-| `modify_relationship_ws` | `ModifyRelationshipWsRequest` | **NEW** - create |
-| `create_schedule_ws` | `CreateScheduleWsRequest` | **NEW** - create |
-| `delete_activity_ws` | `DeleteActivityWsRequest` | **NEW** - create with new tool |
-| `delete_relationship_ws` | `DeleteRelationshipWsRequest` | **NEW** - create with new tool |
-| `assign_activity_codes_ws` | `AssignActivityCodesWsRequest` | **NEW** - create |
-| `remove_activity_codes_ws` | `RemoveActivityCodesWsRequest` | **NEW** - create |
+| Tool | Request Model | Status |
+|------|---------------|--------|
+| `load_schedule_ws` | `LoadScheduleWsRequest` | ✅ Implemented |
+| `calculate_gantt_ws` | `CalculateGanttWsRequest` | ✅ Implemented |
+| `modify_activity_ws` | `ModifyActivityWsRequest` | ✅ Implemented |
+| `add_activity_ws` | `AddActivityWsRequest` | ✅ Implemented |
+| `add_relationship_ws` | `AddRelationshipWsRequest` | ✅ Implemented |
+| `modify_relationship_ws` | `ModifyRelationshipWsRequest` | ✅ Implemented |
+| `create_schedule_ws` | `CreateScheduleWsRequest` | ✅ Implemented |
+| `delete_activity_ws` | `DeleteActivityWsRequest` | ⏳ Model exists, tool pending |
+| `delete_relationship_ws` | `DeleteRelationshipWsRequest` | ⏳ Model exists, tool pending |
+| `assign_activity_codes_ws` | `AssignActivityCodesWsRequest` | ✅ Implemented |
+| `remove_activity_codes_ws` | `RemoveActivityCodesWsRequest` | ✅ Implemented |
 
 ---
 
