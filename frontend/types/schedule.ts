@@ -95,6 +95,8 @@ export interface GanttChartData {
   available_activity_codes: AvailableActivityCodes;
   /** Current grouping applied (e.g., "Phase", "WBS", null) */
   grouping?: string | null;
+  /** If true, items are pre-sorted (MS Project hierarchy) - don't re-sort on frontend */
+  preserve_order?: boolean;
 }
 
 /**

@@ -277,7 +277,13 @@ async def chat_stream(
                         )
                     
                     # Stream any gantt panel events that were queued during tool execution
+                    logfire.info(
+                        "Streaming gantt events",
+                        queue_length=len(gantt_event_queue),
+                        has_events=bool(gantt_event_queue),
+                    )
                     for gantt_event in gantt_event_queue:
+                        logfire.info("Yielding gantt event", event_type=gantt_event.get('type'), action=gantt_event.get('action'))
                         yield sse_event(gantt_event)
             
             # Save assistant response to display history (always save, even if empty)

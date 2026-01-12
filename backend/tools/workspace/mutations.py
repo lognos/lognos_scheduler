@@ -23,6 +23,132 @@ from backend.models.io import (
 )
 
 
+def _build_ms_project_hierarchy(
+    filtered_df: pd.DataFrame,
+    hours_per_day: float,
+    show_details: bool
+) -> list[dict]:
+    """
+    Build hierarchical Gantt items for MS Project schedules.
+    
+    MS Project uses WBS dotted notation (1, 1.1, 1.1.1) and is_summary flag
+    to define hierarchy. This function:
+    1. Uses actual summary tasks (is_summary=True) as parents
+    2. Nests children under their immediate parent based on WBS prefix
+    3. Calculates outline_level from WBS dot count
+    
+    Args:
+        filtered_df: DataFrame with schedule activities
+        hours_per_day: Hours per working day for duration conversion
+        show_details: If False, only show summary tasks
+        
+    Returns:
+        List of Gantt items with proper hierarchy
+    """
+    gantt_items = []
+    
+    if filtered_df.empty:
+        return gantt_items
+    
+    # Build WBS lookup for parent finding
+    # WBS like "1.3.1.2" has parent "1.3.1"
+    def get_parent_wbs(wbs: str) -> str | None:
+        if not wbs or '.' not in wbs:
+            return None
+        return wbs.rsplit('.', 1)[0]
+    
+    def get_outline_level(wbs: str) -> int:
+        if not wbs:
+            return 1
+        return wbs.count('.') + 1
+    
+    # Create a map of WBS -> task_id for parent lookup
+    wbs_to_task_id: dict[str, int] = {}
+    for _, row in filtered_df.iterrows():
+        wbs = row.get('wbs_path', '') or row.get('wbs', '') or ''
+        if wbs:
+            wbs_to_task_id[wbs] = int(row['task_id'])
+    
+    # Build items sorted by WBS for proper order
+    df_sorted = filtered_df.copy()
+    df_sorted['_wbs'] = df_sorted['wbs_path'].fillna(df_sorted.get('wbs', ''))
+    df_sorted = df_sorted.sort_values('_wbs')
+    
+    for _, row in df_sorted.iterrows():
+        is_summary = bool(row.get('is_summary', False))
+        
+        # Skip detail activities if not showing details
+        if not show_details and not is_summary:
+            continue
+        
+        wbs = row.get('wbs_path', '') or row.get('wbs', '') or ''
+        outline_level = get_outline_level(wbs)
+        
+        # Find parent task_id
+        parent_wbs = get_parent_wbs(wbs)
+        parent_id = None
+        if parent_wbs and parent_wbs in wbs_to_task_id:
+            parent_id = f"task-{wbs_to_task_id[parent_wbs]}"
+        
+        # Calculate durations
+        duration_hours = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
+        working_days = duration_hours / hours_per_day
+        
+        early_start = row.get('early_start')
+        early_finish = row.get('early_finish')
+        
+        if pd.notna(early_start) and pd.notna(early_finish):
+            calendar_days = (early_finish - early_start).days + 1
+        else:
+            calendar_days = 0
+        
+        # Determine status
+        status = 'not_started'
+        pct_complete = float(row.get('phys_complete_pct', 0)) if pd.notna(row.get('phys_complete_pct')) else 0
+        if pct_complete >= 100:
+            status = 'completed'
+        elif pct_complete > 0:
+            status = 'in_progress'
+        
+        # Count children for summary tasks
+        children_count = 0
+        if is_summary and wbs:
+            # Count direct children (WBS starts with this + '.')
+            prefix = wbs + '.'
+            children_count = len([w for w in wbs_to_task_id.keys() if w.startswith(prefix) and w.count('.') == wbs.count('.') + 1])
+        
+        item = {
+            'id': int(row['task_id']),
+            's_item_id': str(row.get('task_code', row.get('ms_uid', ''))),
+            's_item': row.get('task_name', ''),
+            'working_days': working_days,
+            'calendar_days': calendar_days,
+            'total_float': float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
+            'start': early_start.isoformat() if pd.notna(early_start) else '',
+            'finish': early_finish.isoformat() if pd.notna(early_finish) else '',
+            'is_critical': bool(row.get('is_critical', False)),
+            'wbs_path': wbs,
+            'status': status,
+            'level': outline_level,
+            'is_summary': is_summary,
+            'parent_id': parent_id,
+            'children_count': children_count,
+            'group_name': wbs.split('.')[0] if wbs else None,  # Top-level WBS segment
+        }
+        
+        gantt_items.append(item)
+    
+    logfire.info(
+        "Built MS Project hierarchy",
+        total_items=len(gantt_items),
+        summary_count=len([i for i in gantt_items if i['is_summary']]),
+        detail_count=len([i for i in gantt_items if not i['is_summary']]),
+        max_level=max([i['level'] for i in gantt_items]) if gantt_items else 0
+    )
+    
+    return gantt_items
+
+
 @logfire.instrument("load_schedule_ws")
 async def load_schedule_ws(
     ctx: RunContext[AgentDeps],
@@ -220,12 +346,28 @@ async def calculate_gantt_ws(
         gantt_items = []
         grouping_applied = None
         
-        # Use filtered_df for all grouping and item building
-        if req.group_by:
-            # Determine grouping source
+        # Check if this is an MS Project schedule (has is_summary column with actual summary tasks)
+        is_ms_schedule = (
+            'is_summary' in filtered_df.columns and 
+            filtered_df['is_summary'].any()
+        )
+        
+        # For MS Project schedules, ALWAYS use hierarchical display
+        # MS Project data inherently has hierarchy via is_summary and WBS
+        if is_ms_schedule:
+            grouping_applied = 'WBS'
+            gantt_items = _build_ms_project_hierarchy(
+                filtered_df, 
+                hours_per_day, 
+                req.show_details
+            )
+            # Skip P6 group processing - MS hierarchy already built
+            groups = None
+        elif req.group_by:
+            # Determine grouping source (P6 schedules only at this point)
             if req.group_by.lower() == 'wbs':
-                # Group by WBS path (use first segment as group)
                 grouping_applied = 'WBS'
+                # P6: Group by first WBS segment (use / as separator)
                 groups: dict[str, list[int]] = {}
                 for _, row in filtered_df.iterrows():
                     wbs_path = row.get('wbs_path', '') or ''
@@ -265,68 +407,69 @@ async def calculate_gantt_ws(
                     # No activity codes - all filtered activities are unassigned
                     groups['Unassigned'] = filtered_df['task_id'].tolist()
             
-            # Build hierarchical items: summary bars + optional details
-            summary_id_counter = -1000  # Use negative IDs for synthetic summary items
-            
-            for group_name, task_ids in sorted(groups.items()):
-                if not task_ids:
-                    continue
+            # Build hierarchical items for P6-style grouping (skip if MS hierarchy was already built)
+            if groups is not None:
+                summary_id_counter = -1000  # Use negative IDs for synthetic summary items
+                
+                for group_name, task_ids in sorted(groups.items()):
+                    if not task_ids:
+                        continue
+                        
+                    # Get activities in this group from filtered DataFrame
+                    group_df = filtered_df[filtered_df['task_id'].isin(task_ids)]
                     
-                # Get activities in this group from filtered DataFrame
-                group_df = filtered_df[filtered_df['task_id'].isin(task_ids)]
-                
-                if group_df.empty:
-                    continue
-                
-                # Calculate summary bar dates (min start, max finish)
-                valid_starts = group_df['early_start'].dropna()
-                valid_finishes = group_df['early_finish'].dropna()
-                
-                if valid_starts.empty or valid_finishes.empty:
-                    continue
-                
-                summary_start = valid_starts.min()
-                summary_finish = valid_finishes.max()
-                summary_calendar_days = (summary_finish - summary_start).days + 1
-                
-                # Sum working days for summary
-                total_working_hours = group_df['target_drtn_hr_cnt'].fillna(0).sum()
-                summary_working_days = float(total_working_hours) / hours_per_day
-                
-                # Check if any child is critical
-                any_critical = group_df['is_critical'].any() if 'is_critical' in group_df.columns else False
-                
-                parent_id_str = f"summary-{summary_id_counter}"
-                
-                # Create summary item (Level 1)
-                summary_item = {
-                    'id': summary_id_counter,
-                    's_item_id': f"GRP-{group_name[:8].upper()}",
-                    's_item': group_name,
-                    'working_days': summary_working_days,
-                    'calendar_days': summary_calendar_days,
-                    'total_float': 0,  # Summary bars don't have float
-                    'start': summary_start.isoformat(),
-                    'finish': summary_finish.isoformat(),
-                    'is_critical': bool(any_critical),
-                    'wbs_path': '',
-                    'status': 'not_started',  # Could compute from children
-                    'level': 1,
-                    'is_summary': True,
-                    'parent_id': None,
-                    'children_count': len(task_ids),
-                    'group_name': group_name,
-                }
-                gantt_items.append(summary_item)
-                
-                # Add detail items (Level 2) if requested
-                if req.show_details:
-                    for _, row in group_df.iterrows():
-                        detail_item = build_activity_item(row, level=2, parent_id=parent_id_str)
-                        detail_item['group_name'] = group_name
-                        gantt_items.append(detail_item)
-                
-                summary_id_counter -= 1
+                    if group_df.empty:
+                        continue
+                    
+                    # Calculate summary bar dates (min start, max finish)
+                    valid_starts = group_df['early_start'].dropna()
+                    valid_finishes = group_df['early_finish'].dropna()
+                    
+                    if valid_starts.empty or valid_finishes.empty:
+                        continue
+                    
+                    summary_start = valid_starts.min()
+                    summary_finish = valid_finishes.max()
+                    summary_calendar_days = (summary_finish - summary_start).days + 1
+                    
+                    # Sum working days for summary
+                    total_working_hours = group_df['target_drtn_hr_cnt'].fillna(0).sum()
+                    summary_working_days = float(total_working_hours) / hours_per_day
+                    
+                    # Check if any child is critical
+                    any_critical = group_df['is_critical'].any() if 'is_critical' in group_df.columns else False
+                    
+                    parent_id_str = f"summary-{summary_id_counter}"
+                    
+                    # Create summary item (Level 1)
+                    summary_item = {
+                        'id': summary_id_counter,
+                        's_item_id': f"GRP-{group_name[:8].upper()}",
+                        's_item': group_name,
+                        'working_days': summary_working_days,
+                        'calendar_days': summary_calendar_days,
+                        'total_float': 0,  # Summary bars don't have float
+                        'start': summary_start.isoformat(),
+                        'finish': summary_finish.isoformat(),
+                        'is_critical': bool(any_critical),
+                        'wbs_path': '',
+                        'status': 'not_started',  # Could compute from children
+                        'level': 1,
+                        'is_summary': True,
+                        'parent_id': None,
+                        'children_count': len(task_ids),
+                        'group_name': group_name,
+                    }
+                    gantt_items.append(summary_item)
+                    
+                    # Add detail items (Level 2) if requested
+                    if req.show_details:
+                        for _, row in group_df.iterrows():
+                            detail_item = build_activity_item(row, level=2, parent_id=parent_id_str)
+                            detail_item['group_name'] = group_name
+                            gantt_items.append(detail_item)
+                    
+                    summary_id_counter -= 1
         else:
             # No grouping - flat list (all Level 2) from filtered DataFrame
             for _, row in filtered_df.iterrows():
@@ -354,6 +497,8 @@ async def calculate_gantt_ws(
                 'filtered_activities': len(filtered_df),
                 'available_activity_codes': workspace.code_types_with_values,
                 'grouping': grouping_applied,
+                # MS Project schedules are pre-sorted by WBS hierarchy - don't re-sort on frontend
+                'preserve_order': bool(is_ms_schedule),
             }
         }
         

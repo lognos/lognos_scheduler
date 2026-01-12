@@ -655,7 +655,6 @@ class UpdateActivityMsRequest(BaseModel):
     owner: Optional[str] = Field(None, description="Activity owner")
     scope_owner: Optional[str] = Field(None, description="Scope owner")
 ```
-```
 
 ### 4. AgentDeps Extension
 

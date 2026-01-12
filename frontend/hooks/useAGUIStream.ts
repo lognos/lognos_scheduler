@@ -137,16 +137,27 @@ export function useAGUIStream() {
                 },
             ]);
 
+            // Buffer for incomplete SSE messages across chunks
+            let sseBuffer = '';
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
                 const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n\n');
+                // Append new chunk to buffer
+                sseBuffer += chunk;
+                
+                // Split by SSE message delimiter
+                const messages = sseBuffer.split('\n\n');
+                
+                // Keep the last (possibly incomplete) message in buffer
+                sseBuffer = messages.pop() || '';
 
-                for (const line of lines) {
+                for (const line of messages) {
                     if (line.startsWith('data: ')) {
                         const dataStr = line.slice(6);
+                        if (!dataStr) continue; // Skip empty data
                         try {
                             const data: SSEEvent = JSON.parse(dataStr);
 
