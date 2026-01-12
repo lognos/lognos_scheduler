@@ -8,6 +8,8 @@ from backend.services.vector_service import VectorService
 
 if TYPE_CHECKING:
     from backend.utils.safe_db import SafeP6Transaction
+    from backend.repositories.ms_schedule_repository import MSScheduleRepository
+    from supabase import Client
 
 
 @dataclass
@@ -21,6 +23,8 @@ class AgentDeps:
         transaction: Optional SafeP6Transaction for marking modifications.
         gantt_event_queue: Queue for gantt panel events to be streamed to frontend.
         conversation_id: Unique conversation ID for workspace isolation.
+        ms_repository: Optional repository for MS Project schedules (Supabase).
+        supabase_client: Optional Supabase client for direct access.
     """
     service: SchedulingService
     vector_service: Optional[VectorService] = None
@@ -28,6 +32,8 @@ class AgentDeps:
     transaction: Optional["SafeP6Transaction"] = None
     gantt_event_queue: Optional[list] = None
     conversation_id: Optional[str] = None
+    ms_repository: Optional["MSScheduleRepository"] = None
+    supabase_client: Optional["Client"] = None
     
     def mark_modified(self):
         """Mark the transaction as modified so the database will be backed up and saved."""

@@ -62,6 +62,22 @@ from backend.tools import (
     # Indexing tools
     index_project,
 )
+from backend.tools.ms import (
+    # MS Query tools
+    list_schedule_versions_ms,
+    get_schedule_overview_ms,
+    list_activities_ms,
+    get_activity_ms,
+    get_project_constraints_ms,
+    get_calendar_ms,
+    
+    # MS Workspace tools
+    load_schedule_ms,
+    
+    # MS Version tools
+    create_schedule_subversion_ms,
+    promote_subversion_ms,
+)
 from backend.models.io import AgentOutput
 from backend.config.settings import settings
 
@@ -202,5 +218,20 @@ scheduling_agent = Agent(
         
         # Indexing tools
         index_project,
+        
+        # MS Project (Supabase) Query tools
+        list_schedule_versions_ms,
+        get_schedule_overview_ms,
+        list_activities_ms,
+        get_activity_ms,
+        get_project_constraints_ms,
+        get_calendar_ms,
+        
+        # MS Project Workspace tools
+        load_schedule_ms,
+        
+        # MS Project Version tools
+        create_schedule_subversion_ms,
+        promote_subversion_ms,
     ],
 )

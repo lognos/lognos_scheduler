@@ -572,6 +572,95 @@ class GetActivityCodesWsRequest(BaseModel):
 
 
 # ============================================================================
+# MS Project Schedule Request Models (Supabase)
+# ============================================================================
+
+class ListScheduleVersionsMsRequest(BaseModel):
+    """Request to list schedule versions for an MS Project."""
+    model_config = ConfigDict(strict=True)
+    
+    project_name: str = Field(..., description="Project name (e.g., 'BIO4-01-0002')")
+    include_temp: bool = Field(default=True, description="Include temporary/draft subversions")
+
+
+class GetScheduleOverviewMsRequest(BaseModel):
+    """Request for 3-week lookahead schedule overview."""
+    model_config = ConfigDict(strict=True)
+    
+    project_name: str = Field(..., description="Project name")
+    version_id: int | None = Field(None, description="Specific version ID (default: current)")
+    reference_date: str | None = Field(None, description="Reference date YYYY-MM-DD (default: today)")
+    weeks_back: int = Field(default=1, ge=0, le=4, description="Weeks to look back")
+    weeks_forward: int = Field(default=2, ge=1, le=8, description="Weeks to look forward")
+
+
+class ListActivitiesMsRequest(BaseModel):
+    """Request to list activities with filters."""
+    model_config = ConfigDict(strict=True)
+    
+    version_id: int = Field(..., description="Schedule version ID")
+    wbs_prefix: str | None = Field(None, description="Filter by WBS prefix (e.g., '1.3')")
+    date_start: str | None = Field(None, description="Filter activities starting on/after this date")
+    date_end: str | None = Field(None, description="Filter activities finishing on/before this date")
+    critical_only: bool = Field(default=False, description="Only critical path activities")
+    status: Literal["not_started", "in_progress", "complete"] | None = Field(None)
+    owner: str | None = Field(None, description="Filter by activity owner")
+    scope_owner: str | None = Field(None, description="Filter by scope owner")
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class GetActivityMsRequest(BaseModel):
+    """Request to get a single activity."""
+    model_config = ConfigDict(strict=True)
+    
+    activity_id: int | None = Field(None, description="Internal activity ID")
+    ms_uid: int | None = Field(None, description="MS Project UID")
+    version_id: int | None = Field(None, description="Version ID (required if using ms_uid)")
+
+
+class LoadScheduleMsRequest(BaseModel):
+    """Request to load MS schedule into workspace."""
+    model_config = ConfigDict(strict=True)
+    
+    project_name: str = Field(..., description="Project name")
+    version_id: int | None = Field(None, description="Version to load (default: current)")
+
+
+class CreateSubversionMsRequest(BaseModel):
+    """Request to save workspace as a new subversion."""
+    model_config = ConfigDict(strict=True)
+    
+    version_name: str | None = Field(None, description="Name for subversion (auto-generated if not provided)")
+    description: str = Field(..., description="Description of changes made")
+
+
+class PromoteSubversionMsRequest(BaseModel):
+    """Request to promote a subversion to current."""
+    model_config = ConfigDict(strict=True)
+    
+    version_id: int = Field(..., description="Version ID to promote to current")
+    expected_current_version_id: int | None = Field(
+        None, 
+        description="Expected current version for optimistic locking"
+    )
+
+
+class GetProjectConstraintsMsRequest(BaseModel):
+    """Request to get project constraints."""
+    model_config = ConfigDict(strict=True)
+    
+    version_id: int = Field(..., description="Schedule version ID")
+
+
+class GetCalendarMsRequest(BaseModel):
+    """Request to get calendar information."""
+    model_config = ConfigDict(strict=True)
+    
+    version_id: int = Field(..., description="Schedule version ID")
+
+
+# ============================================================================
 # Legacy Workspace Models (deprecated - kept for backward compatibility)
 # ============================================================================
 

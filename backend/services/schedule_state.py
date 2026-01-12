@@ -50,7 +50,8 @@ class ScheduleWorkspace:
     
     # State tracking
     is_modified: bool = False
-    source: str = "new"  # "new" | "p6_loaded"
+    source: str = "new"  # "new" | "p6_loaded" | "ms_loaded"
+    source_version_id: Optional[int] = None  # For MS schedules: Supabase version ID
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     
@@ -162,7 +163,7 @@ class ScheduleWorkspace:
         
         # Critical path filter
         if critical_only and 'is_critical' in df.columns:
-            df = df[df['is_critical'] == True]
+            df = df[df['is_critical']]
         
         # Status filter
         if status and 'status' in df.columns:
@@ -389,6 +390,124 @@ class ScheduleStateManager:
     def get_all_conversation_ids(self) -> list[str]:
         """Get all conversation IDs with active workspaces."""
         return list(self._workspaces.keys())
+    
+    @logfire.instrument("schedule_state_manager.load_from_ms")
+    def load_from_ms(
+        self,
+        conversation_id: str,
+        project_name: str,
+        version_id: int,
+        activities: list[dict],
+        relationships: list[dict],
+        calendar_info: Optional[dict] = None
+    ) -> ScheduleWorkspace:
+        """
+        Load MS Project schedule from Supabase into a workspace.
+        
+        Converts MS Project data structure to workspace-compatible format
+        that can be used with existing _ws tools (modify, Gantt, etc.)
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            project_name: Project name for display
+            version_id: Supabase schedule_versions.id
+            activities: List of activity dicts from schedule_activities
+            relationships: List of relationship dicts from schedule_links
+            calendar_info: Optional calendar configuration
+            
+        Returns:
+            Populated ScheduleWorkspace
+        """
+        # Convert activities to DataFrame with P6-compatible column names
+        activities_df = pd.DataFrame(activities) if activities else pd.DataFrame()
+        
+        if not activities_df.empty:
+            # Rename MS columns to workspace-compatible names
+            column_mapping = {
+                'id': 'task_id',
+                'name': 'task_name', 
+                'ms_uid': 'task_code',  # Use ms_uid as task identifier
+                'start': 'target_start_date',
+                'finish': 'target_end_date',
+                'percent_complete': 'phys_complete_pct',
+                'total_float_d': 'total_float_days',
+                'actual_start': 'act_start_date',
+                'actual_finish': 'act_end_date',
+            }
+            
+            for old_name, new_name in column_mapping.items():
+                if old_name in activities_df.columns:
+                    activities_df[new_name] = activities_df[old_name]
+            
+            # Convert duration from days to hours (8 hrs/day for workspace compatibility)
+            if 'duration_d' in activities_df.columns:
+                activities_df['target_drtn_hr_cnt'] = activities_df['duration_d'] * 8
+                activities_df['remain_drtn_hr_cnt'] = activities_df['duration_d'] * 8
+            
+            # Ensure required columns exist
+            required_cols = [
+                'task_id', 'task_code', 'task_name', 'target_drtn_hr_cnt',
+                'remain_drtn_hr_cnt', 'target_start_date', 'target_end_date',
+                'wbs', 'total_float_days'
+            ]
+            for col in required_cols:
+                if col not in activities_df.columns:
+                    activities_df[col] = None
+            
+            # Map wbs to wbs_path for filtering compatibility
+            if 'wbs' in activities_df.columns:
+                activities_df['wbs_path'] = activities_df['wbs']
+        
+        # Convert relationships to DataFrame
+        relationships_df = pd.DataFrame(relationships) if relationships else pd.DataFrame()
+        
+        if not relationships_df.empty:
+            # Rename columns for workspace compatibility
+            rel_mapping = {
+                'id': 'task_pred_id',
+                'succ_id': 'task_id',
+                'pred_id': 'pred_task_id',
+                'rel_type': 'pred_type',
+                'lag_d': 'lag_hr_cnt'
+            }
+            
+            for old_name, new_name in rel_mapping.items():
+                if old_name in relationships_df.columns:
+                    relationships_df[new_name] = relationships_df[old_name]
+            
+            # Convert lag from days to hours
+            if 'lag_d' in relationships_df.columns:
+                relationships_df['lag_hr_cnt'] = relationships_df['lag_d'] * 8
+            
+            # Add pred_type prefix if needed (PR_FS format)
+            if 'pred_type' in relationships_df.columns:
+                relationships_df['pred_type'] = relationships_df['pred_type'].apply(
+                    lambda x: f"PR_{x}" if x and not str(x).startswith('PR_') else x
+                )
+        
+        # Create workspace
+        workspace = ScheduleWorkspace(
+            conversation_id=conversation_id,
+            project_name=project_name,
+            activities_df=activities_df,
+            relationships_df=relationships_df,
+            activity_codes_df=pd.DataFrame(),  # MS schedules don't use P6 activity codes
+            code_types_with_values={},
+            source="ms_loaded",
+            source_version_id=version_id
+        )
+        self._workspaces[conversation_id] = workspace
+        
+        logfire.info(
+            "Loaded MS schedule into workspace",
+            conversation_id=conversation_id,
+            project_name=project_name,
+            version_id=version_id,
+            activity_count=len(activities_df),
+            relationship_count=len(relationships_df)
+        )
+        
+        return workspace
 
 
 # Global instance for the application

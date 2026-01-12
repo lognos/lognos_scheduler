@@ -26,6 +26,7 @@ from backend.utils.safe_db import SafeP6Transaction
 from backend.utils.supabase_client import get_supabase
 from backend.repositories.conversation_repository import ConversationRepository
 from backend.repositories.p6_schedule_repository import P6ScheduleRepository
+from backend.repositories.ms_schedule_repository import MSScheduleRepository
 from backend.models.io import SchedulingResponse, ClarificationRequest, ErrorResponse
 from backend.config.settings import settings
 
@@ -179,6 +180,7 @@ async def chat_stream(
             # Initialize services and run agent
             service = SchedulingService()
             vector_service = VectorService()
+            ms_repo = MSScheduleRepository(supabase)
             
             # Queue for gantt panel events from tools
             gantt_event_queue: list[dict] = []
@@ -191,7 +193,9 @@ async def chat_stream(
                     conn=conn,
                     transaction=transaction,
                     gantt_event_queue=gantt_event_queue,
-                    conversation_id=conversation_id
+                    conversation_id=conversation_id,
+                    ms_repository=ms_repo,
+                    supabase_client=supabase,
                 )
                 
                 with logfire.span(
