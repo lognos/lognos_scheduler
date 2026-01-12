@@ -95,6 +95,27 @@ calendar_exceptions    - Non-working days, holidays, special hours
 - `working_hours`: Override hours for the day
 - `exception_type`: Text (holiday, reduced hours, etc.)
 
+#### `constraint_types` (Lookup Table)
+| ID | Name | Description |
+|----|------|-------------|
+| 0 | ASAP | As Soon As Possible |
+| 1 | ALAP | As Late As Possible |
+| 2 | MSO | Must Start On |
+| 3 | MFO | Must Finish On |
+| 4 | SNET | Start No Earlier Than |
+| 5 | SNLT | Start No Later Than |
+| 6 | FNET | Finish No Earlier Than |
+| 7 | FNLT | Finish No Later Than |
+
+#### `project_constraints` Key Fields
+- `id`: Constraint ID
+- `schedule_version_id`: FK to schedule_versions
+- `project_start_date`: Project start constraint (timestamptz)
+- `project_finish_date`: Project finish date (timestamptz)
+- `status_date`: Data date / status date for scheduling (timestamptz)
+- `schedule_from_start`: Boolean (true = forward scheduling)
+- `created_at`: Record creation timestamp
+
 ---
 
 ## Proposed Architecture
@@ -147,6 +168,7 @@ Following the existing pattern: `{action}_{entity}_{source}`
 | `list_relationships_ms` | List relationships for activities |
 | `get_critical_path_ms` | Get cached critical path from version metadata |
 | `get_calendar_ms` | Get calendar info including exceptions for a version |
+| `get_project_constraints_ms` | Get project constraints (start/finish dates, status date, scheduling direction) |
 
 ### Phase 2: Workspace Integration
 
@@ -335,6 +357,28 @@ class MSScheduleRepository:
             .execute().data
         
         return {'calendar': cal, 'exceptions': exceptions}
+    
+    async def get_project_constraints(self, version_id: int) -> Optional[dict]:
+        """Get project constraints for a version (dates, status date, direction)."""
+        result = self.supabase.table('project_constraints') \
+            .select('*') \
+            .eq('schedule_version_id', version_id) \
+            .execute().data
+        
+        if not result:
+            return None
+        
+        constraints = result[0]
+        # Enrich with constraint type names
+        constraints['scheduling_direction'] = 'forward' if constraints.get('schedule_from_start') else 'backward'
+        return constraints
+    
+    async def get_constraint_types(self) -> list[dict]:
+        """Get all constraint type definitions."""
+        return self.supabase.table('constraint_types') \
+            .select('*') \
+            .order('id') \
+            .execute().data
     
     async def create_subversion(
         self,
