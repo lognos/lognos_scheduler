@@ -5,7 +5,7 @@
  * Extends existing schedule.ts types without transformation layers.
  */
 
-import { ScheduleItem } from '@/types/schedule';
+import { ScheduleItem, ScheduleRelationship, RelationshipType } from '@/types/schedule';
 
 /**
  * Sorting modes for activity display order.
@@ -50,3 +50,36 @@ export interface PositionedItem extends ScheduleItem {
   widthPercentage: number;
   duration: number;
 }
+
+/**
+ * Anchor point coordinates for relationship arrow endpoints
+ */
+export interface AnchorPoint {
+  /** X coordinate as percentage (0-100) */
+  x: number;
+  /** Y coordinate in pixels (row center) */
+  y: number;
+}
+
+/**
+ * Calculated SVG path data for rendering a relationship arrow
+ */
+export interface RelationshipPath {
+  /** Unique identifier for React key */
+  id: string;
+  /** SVG path 'd' attribute */
+  path: string;
+  /** Original relationship data */
+  relationship: ScheduleRelationship;
+  /** Path stroke color (hex) */
+  color: string;
+  /** Stroke width in pixels */
+  strokeWidth: number;
+  /** Lag label text (e.g., "+2d", "-1d") */
+  lagLabel: string | null;
+  /** Position for lag label */
+  lagLabelPosition: { x: number; y: number } | null;
+}
+
+// Re-export for convenience
+export type { RelationshipType, ScheduleRelationship };

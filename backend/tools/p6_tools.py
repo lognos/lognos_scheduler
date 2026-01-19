@@ -1001,6 +1001,44 @@ async def calculate_and_display_gantt_tool(
                 'status': row.get('status', 'not_started'),
             })
         
+        # Build relationships data for Gantt arrows
+        # Filter relationships to only include those where both activities are in filtered view
+        filtered_task_ids = set(filtered_df['task_id'].tolist())
+        gantt_relationships = []
+        
+        if not workspace.relationships_df.empty:
+            # Get task_code mapping for the filtered activities
+            task_id_to_code = dict(zip(filtered_df['task_id'], filtered_df['task_code']))
+            
+            for _, rel in workspace.relationships_df.iterrows():
+                pred_id = rel.get('pred_task_id')
+                succ_id = rel.get('task_id')
+                
+                # Only include if both activities are in the filtered view
+                if pred_id in filtered_task_ids and succ_id in filtered_task_ids:
+                    pred_type = rel.get('pred_type', 'PR_FS')
+                    # Convert P6 format (PR_FS) to simple format (FS)
+                    rel_type = pred_type.replace('PR_', '') if pred_type.startswith('PR_') else pred_type
+                    
+                    # Calculate if relationship is on critical path
+                    # A relationship is critical if both activities are on the critical path
+                    is_critical = (
+                        pred_id in result.critical_path_ids and
+                        succ_id in result.critical_path_ids
+                    )
+                    
+                    # Convert lag from hours to days
+                    lag_hours = rel.get('lag_hr_cnt', 0)
+                    lag_days = (lag_hours / hours_per_day) if pd.notna(lag_hours) else 0
+                    
+                    gantt_relationships.append({
+                        'pred_id': task_id_to_code.get(pred_id, str(pred_id)),
+                        'succ_id': task_id_to_code.get(succ_id, str(succ_id)),
+                        'rel_type': rel_type,
+                        'lag_days': lag_days,
+                        'is_critical': is_critical,
+                    })
+        
         # Build filter description
         filter_parts = []
         if filter_activity_codes:
@@ -1024,6 +1062,7 @@ async def calculate_and_display_gantt_tool(
             'action': 'show',
             'data': {
                 'items': gantt_items,
+                'relationships': gantt_relationships,
                 'project_start': result.project_start.isoformat(),
                 'project_finish': result.project_finish.isoformat(),
                 'critical_path_length': result.critical_path_length_days,

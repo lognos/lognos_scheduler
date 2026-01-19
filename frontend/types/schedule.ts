@@ -74,11 +74,34 @@ export interface AvailableActivityCodes {
 }
 
 /**
+ * Relationship types for schedule dependencies
+ */
+export type RelationshipType = 'FS' | 'SS' | 'FF' | 'SF';
+
+/**
+ * Relationship between two activities for Gantt visualization
+ */
+export interface ScheduleRelationship {
+  /** Predecessor activity code (s_item_id) */
+  pred_id: string;
+  /** Successor activity code (s_item_id) */
+  succ_id: string;
+  /** Relationship type: FS (Finish-to-Start), SS (Start-to-Start), FF (Finish-to-Finish), SF (Start-to-Finish) */
+  rel_type: RelationshipType;
+  /** Lag in days (positive = delay, negative = lead) */
+  lag_days: number;
+  /** Whether this relationship is on the critical path */
+  is_critical?: boolean;
+}
+
+/**
  * Complete Gantt chart data streamed from the agent
  */
 export interface GanttChartData {
   /** List of activities to display */
   items: ScheduleItem[];
+  /** Relationships between activities for dependency arrows */
+  relationships?: ScheduleRelationship[];
   /** Project start date (ISO format) */
   project_start: string;
   /** Project finish date (ISO format) */

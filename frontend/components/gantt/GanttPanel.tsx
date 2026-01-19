@@ -6,10 +6,10 @@
  * Virtualized for performance with 500-1000+ activities.
  */
 
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, parseISO } from 'date-fns';
-import { X, Calendar, Filter, AlertTriangle } from 'lucide-react';
+import { X, Calendar, Filter, AlertTriangle, GitBranch } from 'lucide-react';
 import { GanttChartData, GanttFilter } from '@/types/schedule';
 import {
   useTimeline,
@@ -19,6 +19,7 @@ import {
   YearGroup,
   SortMode,
 } from './hooks';
+import { RelationshipArrows } from './RelationshipArrows';
 
 interface GanttPanelProps {
   data: GanttChartData;
@@ -29,8 +30,23 @@ interface GanttPanelProps {
  * Floating Gantt chart panel that displays schedule data
  * streamed from the scheduling agent via AG-UI.
  */
+
+type RelationshipMode = 'none' | 'critical' | 'all';
+
 export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
   const parentRef = useRef<HTMLDivElement>(null);
+  const [relationshipMode, setRelationshipMode] = useState<RelationshipMode>('critical');
+
+  // Cycle through modes: critical → all → none → critical
+  const cycleRelationshipMode = () => {
+    setRelationshipMode((prev) => {
+      switch (prev) {
+        case 'critical': return 'all';
+        case 'all': return 'none';
+        case 'none': return 'critical';
+      }
+    });
+  };
 
   // Use shared hooks
   const timeline = useTimeline({
@@ -60,7 +76,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
   const rowVirtualizer = useVirtualizer({
     count: positionedItems.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 28, // row height in px
+    estimateSize: () => 36, // row height in px
     overscan: 10, // render 10 extra rows above/below viewport for smooth scrolling
   });
 
@@ -93,6 +109,31 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
           <span>Finish: {format(parseISO(data.project_finish), 'MMM d, yyyy')}</span>
           <span>Critical Path: {data.critical_path_length.toFixed(1)} days</span>
         </div>
+        {/* Relationships toggle */}
+        {data.relationships && data.relationships.length > 0 && (
+          <button
+            onClick={cycleRelationshipMode}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+              relationshipMode === 'all'
+                ? 'bg-blue-600/20 text-blue-300'
+                : relationshipMode === 'critical'
+                  ? 'bg-red-600/20 text-red-300'
+                  : 'hover:bg-dark-700 text-gray-500'
+            }`}
+            title={
+              relationshipMode === 'all' 
+                ? 'Showing all relationships' 
+                : relationshipMode === 'critical'
+                  ? 'Showing critical path only'
+                  : 'Relationships hidden'
+            }
+          >
+            <GitBranch className="h-3 w-3" />
+            <span>
+              {relationshipMode === 'all' ? 'All' : relationshipMode === 'critical' ? 'Critical' : 'None'}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Filter indicator */}
@@ -129,6 +170,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
                   position: 'relative',
                 }}
               >
+                {/* Activity rows */}
                 {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                   const item = positionedItems[virtualRow.index];
                   return (
@@ -147,6 +189,25 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
                     </div>
                   );
                 })}
+
+                {/* Relationship arrows overlay - positioned over timeline area only */}
+                {data.relationships && data.relationships.length > 0 && relationshipMode !== 'none' && (
+                  <div 
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{ 
+                      left: '192px', // w-48 = 12rem = 192px (label column width)
+                      right: 0,
+                    }}
+                  >
+                    <RelationshipArrows
+                      items={positionedItems}
+                      relationships={data.relationships}
+                      rowHeight={36}
+                      showCriticalOnly={relationshipMode === 'critical'}
+                      totalHeight={rowVirtualizer.getTotalSize()}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -154,7 +215,10 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
       </div>
 
       {/* Legend */}
-      <Legend grouping={data.grouping} />
+      <Legend
+        grouping={data.grouping}
+        hasRelationships={!!data.relationships && data.relationships.length > 0}
+      />
     </div>
   );
 };
@@ -304,12 +368,13 @@ ${item.is_critical ? '(Critical Path)' : ''}`;
 
 interface LegendProps {
   grouping?: string | null;
+  hasRelationships?: boolean;
 }
 
-function Legend({ grouping }: LegendProps) {
+function Legend({ grouping, hasRelationships }: LegendProps) {
   return (
     <div className="px-4 py-2 border-t border-dark-700 bg-dark-800/30 text-xs rounded-b-xl">
-      <div className="flex items-center gap-4 text-gray-400">
+      <div className="flex items-center gap-4 text-gray-400 flex-wrap">
         {grouping && (
           <div className="flex items-center gap-1">
             <div className="w-3 h-3 rounded bg-yellow-600 border border-yellow-500"></div>
@@ -332,6 +397,25 @@ function Legend({ grouping }: LegendProps) {
           <div className="w-3 h-3 rounded bg-gray-600"></div>
           <span>Not Started</span>
         </div>
+        {hasRelationships && (
+          <>
+            <div className="w-px h-3 bg-dark-600 mx-1"></div>
+            <div className="flex items-center gap-1">
+              <svg className="w-4 h-3" viewBox="0 0 16 12">
+                <line x1="0" y1="6" x2="12" y2="6" stroke="#EF4444" strokeWidth="2" />
+                <polygon points="12,3 16,6 12,9" fill="#EF4444" />
+              </svg>
+              <span>Critical Link</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <svg className="w-4 h-3" viewBox="0 0 16 12">
+                <line x1="0" y1="6" x2="12" y2="6" stroke="#6B7280" strokeWidth="1.5" />
+                <polygon points="12,3 16,6 12,9" fill="#6B7280" />
+              </svg>
+              <span>Link</span>
+            </div>
+          </>
+        )}
       </div>
       {grouping && <div className="mt-1 text-gray-500">Grouped by: {grouping}</div>}
     </div>

@@ -8,15 +8,27 @@
 import React from 'react';
 import { format, parseISO } from 'date-fns';
 import { Calendar } from 'lucide-react';
-import { ScheduleItem } from '@/types';
+import { ScheduleItem, ScheduleRelationship } from '@/types';
 import { useTimeline, useBarPositions, PositionedItem, TimelineMonth, YearGroup } from './hooks';
+import { RelationshipArrows } from './RelationshipArrows';
 
 interface GanttChartProps {
   data: ScheduleItem[];
+  /** Optional relationships for dependency arrows */
+  relationships?: ScheduleRelationship[];
   loading?: boolean;
+  /** Show only critical path relationships (default: true) */
+  showCriticalOnly?: boolean;
 }
 
-const GanttChart: React.FC<GanttChartProps> = ({ data, loading }) => {
+const ROW_HEIGHT = 44; // Height of each row in pixels (including spacing)
+
+const GanttChart: React.FC<GanttChartProps> = ({
+  data,
+  relationships,
+  loading,
+  showCriticalOnly = true,
+}) => {
   // Use shared hooks instead of duplicated useMemo blocks
   const timeline = useTimeline({ items: data });
   const positionedItems = useBarPositions({
@@ -33,6 +45,8 @@ const GanttChart: React.FC<GanttChartProps> = ({ data, loading }) => {
   if (!data || data.length === 0) {
     return <EmptyState />;
   }
+
+  const totalHeight = positionedItems.length * ROW_HEIGHT;
 
   return (
     <div className="bg-dark-800/50 backdrop-blur-sm rounded-xl p-6 border border-dark-700 print:bg-white print:border print:border-gray-300 print:rounded-none print:page-break-inside-avoid chart-color-preserve">
@@ -51,11 +65,24 @@ const GanttChart: React.FC<GanttChartProps> = ({ data, loading }) => {
       {/* Timeline Header */}
       <TimelineHeader months={timeline.months} yearGroups={timeline.yearGroups} />
 
-      {/* Gantt Bars */}
-      <div className="space-y-3">
-        {positionedItems.map((item, index) => (
-          <GanttRow key={item.s_item_id} item={item} colorIndex={index} />
-        ))}
+      {/* Gantt Bars with Relationships */}
+      <div className="relative" style={{ minHeight: totalHeight }}>
+        <div className="space-y-3">
+          {positionedItems.map((item, index) => (
+            <GanttRow key={item.s_item_id} item={item} colorIndex={index} />
+          ))}
+        </div>
+
+        {/* Relationship arrows overlay */}
+        {relationships && relationships.length > 0 && (
+          <RelationshipArrows
+            items={positionedItems}
+            relationships={relationships}
+            rowHeight={ROW_HEIGHT}
+            showCriticalOnly={showCriticalOnly}
+            totalHeight={totalHeight}
+          />
+        )}
       </div>
     </div>
   );
