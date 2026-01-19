@@ -1,0 +1,361 @@
+/**
+ * GanttPanel Component
+ *
+ * Floating Gantt chart panel with filters, hierarchy support, and virtualization.
+ * Uses shared hooks for timeline and bar position calculations.
+ * Virtualized for performance with 500-1000+ activities.
+ */
+
+import React, { useMemo, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { format, parseISO } from 'date-fns';
+import { X, Calendar, Filter, AlertTriangle } from 'lucide-react';
+import { GanttChartData, GanttFilter } from '@/types/schedule';
+import {
+  useTimeline,
+  useBarPositions,
+  PositionedItem,
+  TimelineMonth,
+  YearGroup,
+  SortMode,
+} from './hooks';
+
+interface GanttPanelProps {
+  data: GanttChartData;
+  onClose: () => void;
+}
+
+/**
+ * Floating Gantt chart panel that displays schedule data
+ * streamed from the scheduling agent via AG-UI.
+ */
+export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  // Use shared hooks
+  const timeline = useTimeline({
+    items: data.items,
+    projectStart: data.project_start,
+    projectEnd: data.project_finish,
+  });
+
+  // Determine sort mode based on data characteristics
+  const sortMode: SortMode = data.preserve_order
+    ? 'preserve' // MS Project: keep WBS hierarchy
+    : data.grouping
+      ? 'grouped' // P6 with grouping: group-aware sort
+      : 'start-date'; // P6 ungrouped: simple chronological
+
+  const positionedItems = useBarPositions({
+    items: data.items,
+    timelineStartDate: timeline.startDate,
+    totalDays: timeline.totalDays,
+    sortMode,
+  });
+
+  // Build active filter description
+  const filterDescription = useFilterDescription(data.filter_applied);
+
+  // Virtualization for large datasets
+  const rowVirtualizer = useVirtualizer({
+    count: positionedItems.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28, // row height in px
+    overscan: 10, // render 10 extra rows above/below viewport for smooth scrolling
+  });
+
+  return (
+    <div className="fixed top-20 right-8 bottom-30 w-[900px] bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-800/50 rounded-t-xl">
+        <div className="flex items-center gap-2">
+          <Calendar className="h-5 w-5 text-blue-400" />
+          <h2 className="text-lg font-light text-white">Schedule</h2>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-gray-400">
+            {data.filtered_activities} of {data.total_activities} activities
+          </span>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-dark-700 rounded transition-colors"
+            aria-label="Close panel"
+          >
+            <X className="h-5 w-5 text-gray-400 hover:text-white" />
+          </button>
+        </div>
+      </div>
+
+      {/* Stats bar */}
+      <div className="px-4 py-2 bg-dark-800/30 border-b border-dark-700 text-xs text-gray-400 flex items-center justify-between">
+        <div className="flex gap-4">
+          <span>Start: {format(parseISO(data.project_start), 'MMM d, yyyy')}</span>
+          <span>Finish: {format(parseISO(data.project_finish), 'MMM d, yyyy')}</span>
+          <span>Critical Path: {data.critical_path_length.toFixed(1)} days</span>
+        </div>
+      </div>
+
+      {/* Filter indicator */}
+      {filterDescription && (
+        <div className="px-4 py-2 bg-blue-900/20 border-b border-dark-700 text-xs text-blue-300 flex items-center gap-2">
+          <Filter className="h-3 w-3" />
+          <span>{filterDescription}</span>
+        </div>
+      )}
+
+      {/* Gantt chart content */}
+      <div className="flex-1 flex flex-col overflow-hidden p-4">
+        {positionedItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-gray-400">
+            <AlertTriangle className="h-8 w-8 mb-2" />
+            <p>No activities match the current filter</p>
+          </div>
+        ) : (
+          <div className="min-w-[500px] flex flex-col flex-1 overflow-hidden">
+            {/* Timeline header - STICKY, not virtualized */}
+            <div className="sticky top-0 z-10 bg-[#0d1117]">
+              <TimelineHeader
+                months={timeline.months}
+                yearGroups={timeline.yearGroups}
+              />
+            </div>
+
+            {/* Virtualized body - scrollable */}
+            <div ref={parentRef} className="flex-1 overflow-auto">
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const item = positionedItems[virtualRow.index];
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <HierarchicalRow item={item} showGrouping={!!data.grouping} />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      <Legend grouping={data.grouping} />
+    </div>
+  );
+};
+
+// --- Sub-components ---
+
+interface TimelineHeaderProps {
+  months: TimelineMonth[];
+  yearGroups: YearGroup[];
+}
+
+function TimelineHeader({ months, yearGroups }: TimelineHeaderProps) {
+  return (
+    <div className="mb-4">
+      {/* Year row */}
+      <div className="flex">
+        <div className="w-48 shrink-0"></div>
+        <div className="flex-1 flex text-xs text-gray-500">
+          {yearGroups.map((group, index) => (
+            <div
+              key={index}
+              className="text-center font-medium"
+              style={{ flex: group.monthCount }}
+            >
+              {group.year}
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* Month row */}
+      <div className="flex border-b border-dark-600 pb-2">
+        <div className="w-48 shrink-0 text-xs font-medium text-gray-400">Activity</div>
+        <div className="flex-1 flex text-xs text-gray-400">
+          {months.map((month, index) => (
+            <div
+              key={index}
+              className="flex-1 text-center border-r border-dark-700 last:border-r-0"
+            >
+              {month.shortLabel}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface HierarchicalRowProps {
+  item: PositionedItem;
+  showGrouping: boolean;
+}
+
+function HierarchicalRow({ item, showGrouping }: HierarchicalRowProps) {
+  const isSummary = item.is_summary === true;
+  const indentLevel = (item.level || 2) - 1;
+  const indentPx = indentLevel * 16;
+
+  return (
+    <div className={`flex items-center group h-full ${isSummary ? 'bg-dark-700/30' : ''}`}>
+      {/* Activity label with indentation */}
+      <div
+        className="w-48 shrink-0 pr-2 flex items-center"
+        style={{ paddingLeft: `${indentPx}px` }}
+      >
+        {isSummary && (
+          <span
+            className="text-xs text-yellow-500 mr-1"
+            title={`${item.children_count} activities`}
+          >
+            [{item.children_count}]
+          </span>
+        )}
+        <div className="flex-1 min-w-0">
+          <div
+            className={`text-xs truncate ${
+              isSummary ? 'font-semibold text-yellow-400' : 'font-medium text-white'
+            }`}
+            title={item.s_item}
+          >
+            {item.s_item}
+          </div>
+          <div className="text-xs text-gray-500">{item.s_item_id}</div>
+        </div>
+      </div>
+
+      {/* Timeline bar container */}
+      <div className="flex-1 relative h-7 rounded bg-dark-800/30">
+        {/* Activity bar */}
+        <div
+          className={`absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg ${getBarClasses(
+            item
+          )}`}
+          style={{
+            left: `${item.startPercentage}%`,
+            width: `${item.widthPercentage}%`,
+            minWidth: '16px',
+          }}
+          title={getBarTooltip(item, isSummary)}
+        >
+          {item.widthPercentage > 12 ? (
+            <span className="truncate px-1 text-white text-[10px]">
+              {isSummary ? `${item.calendar_days}d` : `${item.working_days}d / ${item.calendar_days}d`}
+            </span>
+          ) : item.widthPercentage > 6 ? (
+            <span className="truncate px-1 text-white text-[10px]">{item.calendar_days}d</span>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getBarClasses(item: PositionedItem): string {
+  if (item.is_summary) {
+    return 'bg-yellow-600/80 border border-yellow-500';
+  }
+  if (item.is_critical) {
+    return 'bg-red-500';
+  }
+  if (item.status === 'completed') {
+    return 'bg-green-600';
+  }
+  if (item.status === 'in_progress') {
+    return 'bg-blue-500';
+  }
+  return 'bg-gray-600';
+}
+
+function getBarTooltip(item: PositionedItem, isSummary: boolean): string {
+  if (isSummary) {
+    return `${item.s_item} (Summary)
+${item.children_count} activities
+Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
+End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
+Calendar Span: ${item.calendar_days}d
+${item.is_critical ? '(Contains Critical Path)' : ''}`;
+  }
+
+  return `${item.s_item}
+Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
+End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
+Working Days: ${item.working_days}d
+Calendar Days: ${item.calendar_days}d
+Total Float: ${item.total_float.toFixed(1)} days
+${item.is_critical ? '(Critical Path)' : ''}`;
+}
+
+interface LegendProps {
+  grouping?: string | null;
+}
+
+function Legend({ grouping }: LegendProps) {
+  return (
+    <div className="px-4 py-2 border-t border-dark-700 bg-dark-800/30 text-xs rounded-b-xl">
+      <div className="flex items-center gap-4 text-gray-400">
+        {grouping && (
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-3 rounded bg-yellow-600 border border-yellow-500"></div>
+            <span>Summary</span>
+          </div>
+        )}
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 rounded bg-red-500"></div>
+          <span>Critical</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 rounded bg-blue-500"></div>
+          <span>In Progress</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 rounded bg-green-600"></div>
+          <span>Completed</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 rounded bg-gray-600"></div>
+          <span>Not Started</span>
+        </div>
+      </div>
+      {grouping && <div className="mt-1 text-gray-500">Grouped by: {grouping}</div>}
+    </div>
+  );
+}
+
+// --- Hooks ---
+
+function useFilterDescription(filter: GanttFilter): string | null {
+  return useMemo(() => {
+    const parts: string[] = [];
+
+    if (filter.activity_codes) {
+      Object.entries(filter.activity_codes).forEach(([type, values]) => {
+        parts.push(`${type}: ${values.join(', ')}`);
+      });
+    }
+    if (filter.wbs_path) parts.push(`WBS: ${filter.wbs_path}`);
+    if (filter.critical_only) parts.push('Critical Path Only');
+    if (filter.status && filter.status.length > 0) {
+      parts.push(`Status: ${filter.status.join(', ')}`);
+    }
+    if (filter.search_term) parts.push(`Search: "${filter.search_term}"`);
+
+    return parts.length > 0 ? parts.join(' | ') : null;
+  }, [filter]);
+}

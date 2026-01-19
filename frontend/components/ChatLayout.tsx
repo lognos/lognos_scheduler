@@ -7,7 +7,7 @@ import { InputArea } from './InputArea';
 import { Sidebar } from './Sidebar';
 import { ChatHeader } from './ChatHeader';
 import { ReviewBadge, ReviewItem } from './ReviewBadge';
-import { GanttPanel } from './GanttPanel';
+import { GanttPanel } from './gantt';
 import { useUser } from '@/lib/contexts/UserContext';
 import { GanttPanelState } from '@/types/schedule';
 
