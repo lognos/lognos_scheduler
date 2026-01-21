@@ -219,11 +219,10 @@ function generateFSPath(
       `L ${entryX} ${entryY}`,
     ]);
   } else {
-    // Inverse-S: route around to the left side to enter from left
-    // Path: exit right → drop halfway → go left past succ.left → drop to entry Y → enter
-    const midY = exitY + (rowHeight / 2 + 4) * verticalDir; // Halfway point between rows
+    // Inverse-S: route around to the left side to enter from left without crossing bars
+    const midY = exitY + (rowHeight / 2 + 4) * verticalDir; // Between rows
     const routeX = Math.min(pred.left, succ.left) - ROUTE_AROUND_GAP; // Left of both bars
-    
+
     return buildPath([
       `M ${exitX} ${exitY}`,
       // Go right a bit then curve down
@@ -324,47 +323,30 @@ function generateSFPath(
   const exitY = pred.centerY;
   const entryY = succ.centerY;
 
-  // Check if there's enough horizontal space (exit is left of entry)
-  const hasSpace = entryX - exitX >= MIN_HORIZONTAL_SPACE;
+  // For SF, route using an inverse-S on the right side to approach entry from the right
+  const midY = exitY + (rowHeight / 2 + 4) * verticalDir; // Between rows
+  const routeX = Math.max(pred.right, succ.right) + ROUTE_AROUND_GAP; // Right of both bars
 
-  if (hasSpace) {
-    // P6-style: short horizontal → vertical → horizontal
-    const elbowX = exitX - P6_BEND_OFFSET;
-    return buildPath([
-      `M ${exitX} ${exitY}`,
-      `L ${elbowX + r} ${exitY}`,
-      `Q ${elbowX} ${exitY} ${elbowX} ${exitY + r * verticalDir}`,
-      `L ${elbowX} ${entryY - r * verticalDir}`,
-      `Q ${elbowX} ${entryY} ${elbowX + r} ${entryY}`,
-      `L ${entryX} ${entryY}`,
-    ]);
-  } else {
-    // Inverse-S: route around to the right side to enter from right
-    // Path: exit left → drop halfway → go right past succ.right → drop to entry Y → enter
-    const midY = exitY + (rowHeight / 2 + 4) * verticalDir; // Halfway point between rows
-    const routeX = Math.max(pred.right, succ.right) + ROUTE_AROUND_GAP; // Right of both bars
-    
-    return buildPath([
-      `M ${exitX} ${exitY}`,
-      // Go left a bit then curve down
-      `L ${exitX - r} ${exitY}`,
-      `Q ${exitX - r * 2} ${exitY} ${exitX - r * 2} ${exitY + r * verticalDir}`,
-      // Drop to midY
-      `L ${exitX - r * 2} ${midY - r * verticalDir}`,
-      // Curve right
-      `Q ${exitX - r * 2} ${midY} ${exitX - r} ${midY}`,
-      // Go right to routeX
-      `L ${routeX - r} ${midY}`,
-      // Curve down
-      `Q ${routeX} ${midY} ${routeX} ${midY + r * verticalDir}`,
-      // Drop to entryY
-      `L ${routeX} ${entryY - r * verticalDir}`,
-      // Curve left toward entry
-      `Q ${routeX} ${entryY} ${routeX - r} ${entryY}`,
-      // Final horizontal to entry
-      `L ${entryX} ${entryY}`,
-    ]);
-  }
+  return buildPath([
+    `M ${exitX} ${exitY}`,
+    // Go left a bit then curve down
+    `L ${exitX - r} ${exitY}`,
+    `Q ${exitX - r * 2} ${exitY} ${exitX - r * 2} ${exitY + r * verticalDir}`,
+    // Drop to midY
+    `L ${exitX - r * 2} ${midY - r * verticalDir}`,
+    // Curve right
+    `Q ${exitX - r * 2} ${midY} ${exitX - r} ${midY}`,
+    // Go right to routeX
+    `L ${routeX - r} ${midY}`,
+    // Curve down
+    `Q ${routeX} ${midY} ${routeX} ${midY + r * verticalDir}`,
+    // Drop to entryY
+    `L ${routeX} ${entryY - r * verticalDir}`,
+    // Curve left toward entry
+    `Q ${routeX} ${entryY} ${routeX - r} ${entryY}`,
+    // Final horizontal to entry
+    `L ${entryX} ${entryY}`,
+  ]);
 }
 
 /**
