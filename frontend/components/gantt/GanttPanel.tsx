@@ -193,7 +193,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
                 {/* Relationship arrows overlay - positioned over timeline area only */}
                 {data.relationships && data.relationships.length > 0 && relationshipMode !== 'none' && (
                   <div 
-                    className="absolute top-0 bottom-0 pointer-events-none"
+                    className="absolute top-0 bottom-0"
                     style={{ 
                       left: '192px', // w-48 = 12rem = 192px (label column width)
                       right: 0,

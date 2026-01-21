@@ -35,6 +35,7 @@ const HORIZONTAL_OFFSET = 6; // Pixels offset from bar edge for arrow tip
 const CORNER_RADIUS = 4; // Match activity bar border-radius
 const MIN_HORIZONTAL_SPACE = 20; // Minimum space needed for direct routing
 const ROUTE_AROUND_GAP = 12; // Gap when routing around bars
+const P6_BEND_OFFSET = 10; // Horizontal offset before vertical bend (P6-style)
 
 // Colors
 const CRITICAL_COLOR = '#EF4444'; // red-500
@@ -63,11 +64,17 @@ export function useRelationshipPaths({
       itemMap.set(item.s_item_id, { item, rowIndex: index });
     });
 
-    // Filter and calculate paths
+    // Filter and calculate paths, deduplicating by relationship ID
+    const seenIds = new Set<string>();
     return relationships
       .filter((rel) => !showCriticalOnly || rel.is_critical)
       .map((rel) => calculatePath(rel, itemMap, rowHeight, containerWidth))
-      .filter((path): path is RelationshipPath => path !== null);
+      .filter((path): path is RelationshipPath => {
+        if (path === null) return false;
+        if (seenIds.has(path.id)) return false;
+        seenIds.add(path.id);
+        return true;
+      });
   }, [items, relationships, rowHeight, showCriticalOnly, containerWidth]);
 }
 
@@ -201,14 +208,14 @@ function generateFSPath(
   const hasSpace = entryX - exitX >= MIN_HORIZONTAL_SPACE;
 
   if (hasSpace) {
-    // Direct Z-path: exit → horizontal → down → horizontal → enter
-    const midX = (exitX + entryX) / 2;
+    // P6-style: short horizontal → vertical → horizontal (avoid long mid-span)
+    const elbowX = exitX + P6_BEND_OFFSET;
     return buildPath([
       `M ${exitX} ${exitY}`,
-      `L ${midX - r} ${exitY}`,
-      `Q ${midX} ${exitY} ${midX} ${exitY + r * verticalDir}`,
-      `L ${midX} ${entryY - r * verticalDir}`,
-      `Q ${midX} ${entryY} ${midX + r} ${entryY}`,
+      `L ${elbowX - r} ${exitY}`,
+      `Q ${elbowX} ${exitY} ${elbowX} ${exitY + r * verticalDir}`,
+      `L ${elbowX} ${entryY - r * verticalDir}`,
+      `Q ${elbowX} ${entryY} ${elbowX + r} ${entryY}`,
       `L ${entryX} ${entryY}`,
     ]);
   } else {
@@ -318,17 +325,17 @@ function generateSFPath(
   const entryY = succ.centerY;
 
   // Check if there's enough horizontal space (exit is left of entry)
-  const hasSpace = exitX - entryX >= MIN_HORIZONTAL_SPACE;
+  const hasSpace = entryX - exitX >= MIN_HORIZONTAL_SPACE;
 
   if (hasSpace) {
-    // Direct path: exit left → down → enter right
-    const midX = (exitX + entryX) / 2;
+    // P6-style: short horizontal → vertical → horizontal
+    const elbowX = exitX - P6_BEND_OFFSET;
     return buildPath([
       `M ${exitX} ${exitY}`,
-      `L ${midX + r} ${exitY}`,
-      `Q ${midX} ${exitY} ${midX} ${exitY + r * verticalDir}`,
-      `L ${midX} ${entryY - r * verticalDir}`,
-      `Q ${midX} ${entryY} ${midX - r} ${entryY}`,
+      `L ${elbowX + r} ${exitY}`,
+      `Q ${elbowX} ${exitY} ${elbowX} ${exitY + r * verticalDir}`,
+      `L ${elbowX} ${entryY - r * verticalDir}`,
+      `Q ${elbowX} ${entryY} ${elbowX + r} ${entryY}`,
       `L ${entryX} ${entryY}`,
     ]);
   } else {

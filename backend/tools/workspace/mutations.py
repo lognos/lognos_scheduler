@@ -479,6 +479,7 @@ async def calculate_gantt_ws(
         # Filter relationships to only include those where both activities are in filtered view
         filtered_task_ids = set(filtered_df['task_id'].tolist())
         gantt_relationships = []
+        seen_relationships: set[tuple[int, int, str]] = set()  # Track (pred_id, succ_id, rel_type) to avoid duplicates
         
         if not workspace.relationships_df.empty:
             # Get task_code mapping for the filtered activities
@@ -493,6 +494,12 @@ async def calculate_gantt_ws(
                     pred_type = rel.get('pred_type', 'PR_FS')
                     # Convert P6 format (PR_FS) to simple format (FS)
                     rel_type = pred_type.replace('PR_', '') if isinstance(pred_type, str) and pred_type.startswith('PR_') else pred_type
+                    
+                    # Skip duplicate relationships (same pred, succ, and type)
+                    rel_key = (pred_id, succ_id, rel_type)
+                    if rel_key in seen_relationships:
+                        continue
+                    seen_relationships.add(rel_key)
                     
                     # Calculate if relationship is on critical path
                     # A relationship is critical if both activities are on the critical path
