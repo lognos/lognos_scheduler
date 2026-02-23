@@ -40,8 +40,8 @@ const P6_BEND_OFFSET = 10; // Horizontal offset before vertical bend (P6-style)
 // Colors
 const CRITICAL_COLOR = '#EF4444'; // red-500
 const NORMAL_COLOR = '#6B7280'; // gray-500
-const CRITICAL_STROKE_WIDTH = 1.5;
-const NORMAL_STROKE_WIDTH = 1;
+const CRITICAL_STROKE_WIDTH = 1.1;
+const NORMAL_STROKE_WIDTH = 0.75;
 
 /**
  * Calculates SVG path data for relationship arrows.
@@ -221,7 +221,9 @@ function generateFSPath(
   } else {
     // Inverse-S: route around to the left side to enter from left without crossing bars
     const midY = exitY + (rowHeight / 2 + 4) * verticalDir; // Between rows
-    const routeX = Math.min(pred.left, succ.left) - ROUTE_AROUND_GAP; // Left of both bars
+    const routeXBase = succ.left; // Use successor start as FS routing reference
+    const routeXMax = entryX - r  - 5; // Keep final segment pointing right toward entry
+    const routeX = Math.min(routeXBase, routeXMax);
 
     return buildPath([
       `M ${exitX} ${exitY}`,

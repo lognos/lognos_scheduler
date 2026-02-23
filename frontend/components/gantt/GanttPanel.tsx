@@ -6,7 +6,7 @@
  * Virtualized for performance with 500-1000+ activities.
  */
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, parseISO } from 'date-fns';
 import { X, Calendar, Filter, AlertTriangle, GitBranch } from 'lucide-react';
@@ -24,6 +24,8 @@ import { RelationshipArrows } from './RelationshipArrows';
 interface GanttPanelProps {
   data: GanttChartData;
   onClose: () => void;
+  width: number;
+  onWidthChange: (width: number) => void;
 }
 
 /**
@@ -33,9 +35,72 @@ interface GanttPanelProps {
 
 type RelationshipMode = 'none' | 'critical' | 'all';
 
-export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
+export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, onWidthChange }) => {
   const parentRef = useRef<HTMLDivElement>(null);
   const [relationshipMode, setRelationshipMode] = useState<RelationshipMode>('critical');
+  const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [activityColumnWidth, setActivityColumnWidth] = useState<number>(192);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const dragState = dragStateRef.current;
+
+      if (dragState) {
+        const delta = dragState.startX - event.clientX;
+        onWidthChange(dragState.startWidth + delta);
+      }
+
+      const columnDragState = columnDragStateRef.current;
+      if (columnDragState) {
+        const minWidth = 140;
+        const maxWidth = Math.max(minWidth, width - 320);
+        const delta = event.clientX - columnDragState.startX;
+        const nextWidth = columnDragState.startWidth + delta;
+        setActivityColumnWidth(Math.min(Math.max(nextWidth, minWidth), maxWidth));
+      }
+    };
+
+    const handleMouseUp = () => {
+      dragStateRef.current = null;
+      columnDragStateRef.current = null;
+      document.body.style.removeProperty('user-select');
+      document.body.style.removeProperty('cursor');
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.removeProperty('user-select');
+      document.body.style.removeProperty('cursor');
+    };
+  }, [onWidthChange]);
+
+  const startResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    dragStateRef.current = {
+      startX: event.clientX,
+      startWidth: width,
+    };
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
+
+  const startColumnResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    columnDragStateRef.current = {
+      startX: event.clientX,
+      startWidth: activityColumnWidth,
+    };
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
 
   // Cycle through modes: critical → all → none → critical
   const cycleRelationshipMode = () => {
@@ -81,7 +146,15 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
   });
 
   return (
-    <div className="fixed top-20 right-8 bottom-30 w-[900px] bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden">
+    <div
+      className="fixed top-20 right-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden"
+      style={{ width: `${width}px` }}
+    >
+      <div
+        className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-20"
+        onMouseDown={startResize}
+        aria-hidden="true"
+      />
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-800/50 rounded-t-xl">
         <div className="flex items-center gap-2">
@@ -152,12 +225,21 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
             <p>No activities match the current filter</p>
           </div>
         ) : (
-          <div className="min-w-[500px] flex flex-col flex-1 overflow-hidden">
+          <div className="min-w-[500px] flex flex-col flex-1 overflow-hidden relative">
+            <div
+              className="absolute top-0 bottom-0 w-2 cursor-col-resize z-20"
+              style={{ left: `${activityColumnWidth - 4}px` }}
+              onMouseDown={startColumnResize}
+              aria-label="Resize activity column"
+              role="separator"
+              aria-orientation="vertical"
+            />
             {/* Timeline header - STICKY, not virtualized */}
             <div className="sticky top-0 z-10 bg-[#0d1117]">
               <TimelineHeader
                 months={timeline.months}
                 yearGroups={timeline.yearGroups}
+                activityColumnWidth={activityColumnWidth}
               />
             </div>
 
@@ -185,7 +267,11 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
                         transform: `translateY(${virtualRow.start}px)`,
                       }}
                     >
-                      <HierarchicalRow item={item} showGrouping={!!data.grouping} />
+                      <HierarchicalRow
+                        item={item}
+                        showGrouping={!!data.grouping}
+                        activityColumnWidth={activityColumnWidth}
+                      />
                     </div>
                   );
                 })}
@@ -195,7 +281,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
                   <div 
                     className="absolute top-0 bottom-0"
                     style={{ 
-                      left: '192px', // w-48 = 12rem = 192px (label column width)
+                      left: `${activityColumnWidth}px`,
                       right: 0,
                     }}
                   >
@@ -228,14 +314,15 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
 interface TimelineHeaderProps {
   months: TimelineMonth[];
   yearGroups: YearGroup[];
+  activityColumnWidth: number;
 }
 
-function TimelineHeader({ months, yearGroups }: TimelineHeaderProps) {
+function TimelineHeader({ months, yearGroups, activityColumnWidth }: TimelineHeaderProps) {
   return (
     <div className="mb-4">
       {/* Year row */}
       <div className="flex">
-        <div className="w-48 shrink-0"></div>
+        <div className="shrink-0" style={{ width: `${activityColumnWidth}px` }}></div>
         <div className="flex-1 flex text-xs text-gray-500">
           {yearGroups.map((group, index) => (
             <div
@@ -250,7 +337,12 @@ function TimelineHeader({ months, yearGroups }: TimelineHeaderProps) {
       </div>
       {/* Month row */}
       <div className="flex border-b border-dark-600 pb-2">
-        <div className="w-48 shrink-0 text-xs font-medium text-gray-400">Activity</div>
+        <div
+          className="shrink-0 text-xs font-medium text-gray-400"
+          style={{ width: `${activityColumnWidth}px` }}
+        >
+          Activity
+        </div>
         <div className="flex-1 flex text-xs text-gray-400">
           {months.map((month, index) => (
             <div
@@ -269,9 +361,10 @@ function TimelineHeader({ months, yearGroups }: TimelineHeaderProps) {
 interface HierarchicalRowProps {
   item: PositionedItem;
   showGrouping: boolean;
+  activityColumnWidth: number;
 }
 
-function HierarchicalRow({ item, showGrouping }: HierarchicalRowProps) {
+function HierarchicalRow({ item, showGrouping, activityColumnWidth }: HierarchicalRowProps) {
   const isSummary = item.is_summary === true;
   const indentLevel = (item.level || 2) - 1;
   const indentPx = indentLevel * 16;
@@ -280,8 +373,8 @@ function HierarchicalRow({ item, showGrouping }: HierarchicalRowProps) {
     <div className={`flex items-center group h-full ${isSummary ? 'bg-dark-700/30' : ''}`}>
       {/* Activity label with indentation */}
       <div
-        className="w-48 shrink-0 pr-2 flex items-center"
-        style={{ paddingLeft: `${indentPx}px` }}
+        className="shrink-0 pr-2 flex items-center"
+        style={{ width: `${activityColumnWidth}px`, paddingLeft: `${indentPx}px` }}
       >
         {isSummary && (
           <span
@@ -333,18 +426,18 @@ function HierarchicalRow({ item, showGrouping }: HierarchicalRowProps) {
 
 function getBarClasses(item: PositionedItem): string {
   if (item.is_summary) {
-    return 'bg-yellow-600/80 border border-yellow-500';
+    return 'bg-yellow-900/55 border border-yellow-700/70';
   }
   if (item.is_critical) {
-    return 'bg-red-500';
+    return 'bg-red-900/70 border border-red-700/70';
   }
   if (item.status === 'completed') {
-    return 'bg-green-600';
+    return 'bg-emerald-900/65 border border-emerald-700/70';
   }
   if (item.status === 'in_progress') {
-    return 'bg-blue-500';
+    return 'bg-blue-900/65 border border-blue-700/70';
   }
-  return 'bg-gray-600';
+  return 'bg-slate-800/75 border border-slate-600/70';
 }
 
 function getBarTooltip(item: PositionedItem, isSummary: boolean): string {
@@ -377,24 +470,24 @@ function Legend({ grouping, hasRelationships }: LegendProps) {
       <div className="flex items-center gap-4 text-gray-400 flex-wrap">
         {grouping && (
           <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded bg-yellow-600 border border-yellow-500"></div>
+            <div className="w-3 h-3 rounded bg-yellow-900/55 border border-yellow-700/70"></div>
             <span>Summary</span>
           </div>
         )}
         <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded bg-red-500"></div>
+          <div className="w-3 h-3 rounded bg-red-900/70 border border-red-700/70"></div>
           <span>Critical</span>
         </div>
         <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded bg-blue-500"></div>
+          <div className="w-3 h-3 rounded bg-blue-900/65 border border-blue-700/70"></div>
           <span>In Progress</span>
         </div>
         <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded bg-green-600"></div>
+          <div className="w-3 h-3 rounded bg-emerald-900/65 border border-emerald-700/70"></div>
           <span>Completed</span>
         </div>
         <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded bg-gray-600"></div>
+          <div className="w-3 h-3 rounded bg-slate-800/75 border border-slate-600/70"></div>
           <span>Not Started</span>
         </div>
         {hasRelationships && (

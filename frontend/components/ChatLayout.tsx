@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageSquare, SquarePen } from 'lucide-react';
 import { Message, AgentState } from '@/hooks/useAGUIStream';
 import { MessageBubble } from './MessageBubble';
@@ -41,9 +41,19 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
 }) => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const { user, t } = useUser();
+    const [ganttWidth, setGanttWidth] = useState<number>(900);
     
     // Determine if Gantt panel is visible
     const isGanttVisible = ganttPanel?.isVisible && ganttPanel?.data;
+
+    const handleGanttWidthChange = useCallback((nextWidth: number) => {
+        const minWidth = 620;
+        const maxWidth = typeof window === 'undefined'
+            ? 1400
+            : Math.max(minWidth, window.innerWidth - 220);
+
+        setGanttWidth(Math.min(Math.max(nextWidth, minWidth), maxWidth));
+    }, []);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -58,7 +68,10 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
             <Sidebar />
 
             {/* Main content area - shrinks when Gantt panel is open */}
-            <div className={`flex-1 flex flex-col pl-16 transition-all duration-300 relative ${isGanttVisible ? 'mr-[940px]' : ''}`}>
+            <div
+                className="flex-1 flex flex-col pl-16 transition-[margin] duration-200 relative"
+                style={isGanttVisible ? { marginRight: `${ganttWidth + 40}px` } : undefined}
+            >
                 {/* Header Actions */}
                 {/* Header Actions */}
                 <ChatHeader
@@ -117,7 +130,12 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
 
             {/* Gantt Panel - Floating side panel */}
             {isGanttVisible && ganttPanel?.data && onHideGanttPanel && (
-                <GanttPanel data={ganttPanel.data} onClose={onHideGanttPanel} />
+                <GanttPanel
+                    data={ganttPanel.data}
+                    onClose={onHideGanttPanel}
+                    width={ganttWidth}
+                    onWidthChange={handleGanttWidthChange}
+                />
             )}
         </div>
     );
