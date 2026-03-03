@@ -87,6 +87,28 @@ export interface AvailableActivityCodes {
 export type RelationshipType = 'FS' | 'SS' | 'FF' | 'SF';
 
 /**
+ * A user-reported activity update (delay, completion, start)
+ */
+export interface ActivityUpdate {
+  /** Unique log identifier */
+  log_id: string;
+  /** Activity code (ms_uid as string) — matches ScheduleItem.s_item_id */
+  s_item_id: string;
+  /** Update type: delay, completion, start */
+  update_type: 'delay' | 'completion' | 'start';
+  /** Free-text description of the update */
+  details: string;
+  /** Structured value (date, duration text, etc.) */
+  reported_value?: string | null;
+  /** Email of the reporter */
+  reported_by: string;
+  /** ISO timestamp of when the update was reported */
+  reported_at: string;
+  /** Whether the update has been incorporated into the schedule */
+  processed: boolean;
+}
+
+/**
  * Relationship between two activities for Gantt visualization
  */
 export interface ScheduleRelationship {
@@ -130,6 +152,9 @@ export interface GanttChartData {
   preserve_order?: boolean;
   /** Whether baseline data is available for this schedule version */
   has_baseline?: boolean;
+
+  /** User-reported activity updates for indicator display */
+  activity_updates?: ActivityUpdate[];
 }
 
 /**
@@ -153,7 +178,7 @@ export interface GanttPanelState {
   isLoading: boolean;
 }
 
-export type PredefinedScheduleViewKey = 'critical_path' | 'lookahead_4w' | 'full_schedule';
+export type PredefinedScheduleViewKey = 'critical_path' | 'lookahead_4w' | 'full_schedule' | 'updates';
 export type ScheduleViewKey = PredefinedScheduleViewKey | 'custom';
 
 export interface ScheduleViewMeta {

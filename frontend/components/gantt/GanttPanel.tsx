@@ -10,10 +10,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, isValid, parseISO, differenceInDays } from 'date-fns';
 import { X, Calendar, Filter, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
-import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta } from '@/types/schedule';
+import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate } from '@/types/schedule';
 import {
   useTimeline,
   useBarPositions,
+  useActivityUpdates,
   PositionedItem,
   TimelineMonth,
   YearGroup,
@@ -68,6 +69,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   const parentRef = useRef<HTMLDivElement>(null);
   const [showLinks, setShowLinks] = useState<boolean>(true);
   const [showBaseline, setShowBaseline] = useState<boolean>(true);
+  const [showUpdates, setShowUpdates] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [activityColumnWidth, setActivityColumnWidth] = useState<number>(192);
@@ -153,6 +155,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
     totalDays: timeline.totalDays,
     sortMode,
   });
+
+  const updatesMap = useActivityUpdates(data.activity_updates);
 
   const collapsibleSummaryKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -420,6 +424,21 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
               </button>
             )}
 
+            {updatesMap.hasUpdates && (
+              <button
+                type="button"
+                onClick={() => setShowUpdates((previous) => !previous)}
+                className={`h-[26px] px-2 rounded-full border flex items-center gap-1 text-xs transition-colors ${
+                  showUpdates
+                    ? 'border-amber-500 text-amber-300 bg-amber-500/10 hover:bg-amber-500/20'
+                    : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
+                }`}
+                title={showUpdates ? 'Hide updates' : 'Show updates'}
+              >
+                Updates
+              </button>
+            )}
+
             {isViewLoading && <span className="text-gray-500">Loading view...</span>}
           </div>
         </div>
@@ -494,6 +513,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                         isCollapsed={isCollapsed}
                         onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
                         showBaseline={showBaseline && !!data.has_baseline}
+                        activityUpdates={showUpdates ? updatesMap.byActivity.get(item.s_item_id) : undefined}
                       />
                     </div>
                   );
@@ -529,6 +549,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         hasRelationships={!!data.relationships && data.relationships.length > 0}
         hasBaseline={!!data.has_baseline}
         showBaseline={showBaseline}
+        hasUpdates={updatesMap.hasUpdates}
+        showUpdates={showUpdates}
       />
     </div>
   );
@@ -611,6 +633,7 @@ interface HierarchicalRowProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   showBaseline: boolean;
+  activityUpdates?: ActivityUpdate[];
 }
 
 function HierarchicalRow({
@@ -620,12 +643,14 @@ function HierarchicalRow({
   isCollapsed,
   onToggleCollapse,
   showBaseline,
+  activityUpdates,
 }: HierarchicalRowProps) {
   const isSummary = item.is_summary === true;
   const isMilestone = !isSummary && (item.working_days === 0 || item.calendar_days === 0);
   const indentLevel = (item.level || 2) - 1;
   const indentPx = indentLevel * 16;
   const bs = ganttStyleSettings.baseline;
+  const us = ganttStyleSettings.updates;
   const hasBaseline = item.baselineStartPercentage !== undefined && item.baselineWidthPercentage !== undefined;
 
   return (
@@ -745,6 +770,105 @@ function HierarchicalRow({
             title={`Baseline: ${format(parseISO(item.baseline_start!), 'MMM dd, yyyy')}`}
           />
         )}
+
+        {/* Update indicator */}
+        {activityUpdates && activityUpdates.length > 0 && (
+          <div
+            className="group/update absolute"
+            style={{
+              left: isMilestone
+                ? `${item.startPercentage}%`
+                : `${item.startPercentage + item.widthPercentage}%`,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              marginLeft: '4px',
+            }}
+          >
+            <div
+              className="rounded-full flex items-center justify-center cursor-default"
+              style={{
+                width: `${us.size}px`,
+                height: `${us.size}px`,
+                backgroundColor: us.bg,
+                color: us.textColor,
+                fontSize: us.fontSize,
+                fontWeight: us.fontWeight,
+              }}
+            >
+              !
+            </div>
+            <UpdateTooltip updates={activityUpdates} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface UpdateTooltipProps {
+  updates: ActivityUpdate[];
+}
+
+function UpdateTooltip({ updates }: UpdateTooltipProps) {
+  const us = ganttStyleSettings.updates;
+
+  return (
+    <div
+      className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 invisible
+                 group-hover/update:opacity-100 group-hover/update:visible
+                 transition-all duration-150 z-50 pointer-events-none
+                 group-hover/update:pointer-events-auto"
+      style={{ width: `${us.tooltipMaxWidth}px` }}
+    >
+      <div className="bg-[#1a1f2e] border border-dark-600 rounded-lg shadow-xl p-3 text-xs">
+        <div className="text-gray-300 font-medium mb-2">
+          {updates.length} Update{updates.length !== 1 ? 's' : ''}
+        </div>
+
+        <div className="space-y-2 max-h-[240px] overflow-y-auto">
+          {updates.map((update) => (
+            <div key={update.log_id} className="border-t border-dark-600 pt-2">
+              <div className="flex items-center justify-between mb-1">
+                <span
+                  className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase"
+                  style={{
+                    backgroundColor: us.typeBadge[update.update_type].bg,
+                    color: us.typeBadge[update.update_type].text,
+                  }}
+                >
+                  {update.update_type}
+                </span>
+                <span className="text-gray-500">
+                  {format(parseISO(update.reported_at), 'MMM dd, yyyy')}
+                </span>
+              </div>
+
+              <p className="text-gray-300 line-clamp-3 mb-1">
+                {update.details}
+              </p>
+
+              {update.reported_value && (
+                <p className="text-gray-400 text-[10px] mb-1">
+                  Value: {update.reported_value}
+                </p>
+              )}
+
+              <p className="text-gray-500 text-[10px]">
+                {update.reported_by}
+              </p>
+
+              <button
+                type="button"
+                disabled
+                className="mt-1.5 px-2 py-0.5 rounded border border-dark-500 text-[10px]
+                           text-gray-500 cursor-not-allowed opacity-50"
+                title="Coming soon: Analyze downstream impact of this update"
+              >
+                Show Impact
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -807,10 +931,13 @@ interface LegendProps {
   hasRelationships?: boolean;
   hasBaseline?: boolean;
   showBaseline?: boolean;
+  hasUpdates?: boolean;
+  showUpdates?: boolean;
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, hasUpdates, showUpdates }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
+  const us = ganttStyleSettings.updates;
 
   return (
     <div className="px-4 py-2 border-t border-dark-700 bg-dark-800/30 text-xs rounded-b-xl">
@@ -870,6 +997,23 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline }: Legen
                 }}
               />
               <span>Baseline</span>
+            </div>
+          </>
+        )}
+        {hasUpdates && showUpdates && (
+          <>
+            <div className="w-px h-3 bg-dark-600 mx-1"></div>
+            <div className="flex items-center gap-1">
+              <div
+                className="w-3 h-3 rounded-full flex items-center justify-center text-[8px] font-bold"
+                style={{
+                  backgroundColor: us.legendBg,
+                  color: us.legendTextColor,
+                }}
+              >
+                !
+              </div>
+              <span>Update</span>
             </div>
           </>
         )}

@@ -181,6 +181,24 @@ class MSScheduleRepository:
         except Exception:
             return None
     
+    @logfire.instrument("ms_repo.get_update_logs_by_version")
+    async def get_update_logs_by_version(self, version_id: int) -> list[dict]:
+        """Fetch schedule update logs for a version.
+
+        Returns rows from ``schedule_update_logs`` ordered by most recent first.
+        """
+        result = (
+            self._table("schedule_update_logs")
+            .select(
+                "log_id, activity_id, update_type, details, reported_value, "
+                "reported_by, reported_at, processed"
+            )
+            .eq("schedule_version_id", version_id)
+            .order("reported_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+
     @logfire.instrument("ms_repo.get_activity_by_ms_uid")
     async def get_activity_by_ms_uid(
         self, 

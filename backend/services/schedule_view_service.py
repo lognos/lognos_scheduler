@@ -15,7 +15,7 @@ from backend.repositories.schedule_view_repository import ScheduleViewRepository
 class ScheduleViewService:
     """Build and cache schedule views for instant UI switching."""
 
-    VIEW_KEYS = ("critical_path", "lookahead_4w", "full_schedule")
+    VIEW_KEYS = ("critical_path", "lookahead_4w", "full_schedule", "updates")
 
     def __init__(
         self,
@@ -89,6 +89,9 @@ class ScheduleViewService:
         payload = snapshot.get("payload")
         if view_key == "critical_path" and cls._is_effectively_empty_payload(payload):
             return True
+        # Updates view is always recomputed (updates can arrive at any time)
+        if view_key == "updates":
+            return True
         # Refresh stale snapshots that predate the baseline feature
         if isinstance(payload, dict) and "has_baseline" not in payload:
             return True
@@ -114,6 +117,13 @@ class ScheduleViewService:
                 "date_start": None,
                 "date_end": None,
                 "overlap_window": False,
+            },
+            "updates": {
+                "critical_only": False,
+                "date_start": None,
+                "date_end": None,
+                "overlap_window": False,
+                "updates_only": True,
             },
         }
 
@@ -142,6 +152,7 @@ class ScheduleViewService:
                 "critical_path": "Critical Path",
                 "lookahead_4w": "4-Week",
                 "full_schedule": "Full",
+                "updates": "Updates",
             }[view_key]
             definition = await self.view_repository.upsert_definition(
                 project_id=project_id,
@@ -265,6 +276,34 @@ class ScheduleViewService:
                     item for item in candidates
                     if abs(item["total_float"] - min_float) <= tolerance
                 ]
+
+        # Updates-only filter: restrict to activities that have update logs
+        updates_only = bool(config.get("updates_only"))
+        if updates_only:
+            pre_update_logs = await self.ms_repository.get_update_logs_by_version(
+                schedule_version_id,
+            )
+            updated_activity_ids: set[int] = {
+                log["activity_id"]
+                for log in pre_update_logs
+                if log.get("activity_id") is not None
+            }
+
+            # When the update is on a summary activity, include its children
+            # so the summary itself is pulled in via WBS ancestry.
+            updated_summary_wbs_prefixes: list[str] = []
+            for item in parsed:
+                if item["is_summary"] and item["id"] in updated_activity_ids and item["wbs"]:
+                    updated_summary_wbs_prefixes.append(item["wbs"] + ".")
+
+            filtered_non_summary = [
+                item for item in filtered_non_summary
+                if item["id"] in updated_activity_ids
+                or any(
+                    item["wbs"].startswith(prefix)
+                    for prefix in updated_summary_wbs_prefixes
+                )
+            ]
 
         # Include summary ancestors for visible hierarchy
         visible_wbs_prefixes = {item["wbs"] for item in filtered_non_summary if item["wbs"]}
@@ -392,6 +431,16 @@ class ScheduleViewService:
             if not item["is_summary"]
         )
 
+        # Fetch update logs for this version and map to s_item_id
+        update_logs = await self.ms_repository.get_update_logs_by_version(
+            schedule_version_id,
+        )
+        activity_updates_payload = self._map_update_logs(
+            update_logs,
+            activity_by_id=activity_by_id,
+            filtered_id_set=filtered_id_set,
+        )
+
         return {
             "items": items_payload,
             "relationships": relationships_payload,
@@ -413,7 +462,88 @@ class ScheduleViewService:
             "grouping": None,
             "preserve_order": True,
             "has_baseline": has_baseline,
+            "activity_updates": activity_updates_payload,
         }
+
+    @staticmethod
+    def _map_update_logs(
+        update_logs: list[dict],
+        *,
+        activity_by_id: dict[int, dict],
+        filtered_id_set: set[int],
+    ) -> list[dict]:
+        """Map raw update-log rows to Gantt payload format.
+
+        Uses *activity_by_id* to resolve the database PK to ``ms_uid``
+        (which becomes ``s_item_id`` on the frontend) and filters by
+        *filtered_id_set*.
+        """
+        result: list[dict] = []
+        for log in update_logs:
+            activity_id = log.get("activity_id")
+            if activity_id is None:
+                continue
+            activity = activity_by_id.get(activity_id)
+            if activity is None:
+                continue
+            if int(activity_id) not in filtered_id_set:
+                continue
+            s_item_id = str(activity.get("ms_uid") or activity_id)
+            result.append(
+                {
+                    "log_id": log["log_id"],
+                    "s_item_id": s_item_id,
+                    "update_type": log["update_type"],
+                    "details": log["details"],
+                    "reported_value": log.get("reported_value"),
+                    "reported_by": log["reported_by"],
+                    "reported_at": log["reported_at"],
+                    "processed": log["processed"],
+                }
+            )
+        return result
+
+    @staticmethod
+    def _inject_fresh_updates(
+        payload: dict,
+        update_logs: list[dict],
+    ) -> dict:
+        """Overlay fresh update logs onto a (possibly cached) payload.
+
+        Builds the ``activity_id → s_item_id`` mapping directly from the
+        payload ``items`` list so this can run outside ``build_view_payload``.
+        """
+        items = payload.get("items") or []
+        id_to_sitem: dict[int, str] = {}
+        sitem_set: set[str] = set()
+        for item in items:
+            item_id = item.get("id")
+            s_id = item.get("s_item_id")
+            if item_id is not None and s_id is not None:
+                id_to_sitem[int(item_id)] = str(s_id)
+                sitem_set.add(str(s_id))
+
+        updates: list[dict] = []
+        for log in update_logs:
+            s_item_id = id_to_sitem.get(log.get("activity_id"))  # type: ignore[arg-type]
+            if s_item_id is None:
+                continue
+            updates.append(
+                {
+                    "log_id": log["log_id"],
+                    "s_item_id": s_item_id,
+                    "update_type": log["update_type"],
+                    "details": log["details"],
+                    "reported_value": log.get("reported_value"),
+                    "reported_by": log["reported_by"],
+                    "reported_at": log["reported_at"],
+                    "processed": log["processed"],
+                }
+            )
+
+        payload = dict(payload)
+        payload["activity_updates"] = updates
+        return payload
 
     @logfire.instrument("schedule_view_service.preload")
     async def preload(self, *, project_id: str) -> dict:
@@ -471,6 +601,13 @@ class ScheduleViewService:
             )
             default_payload = fallback_snapshot.get("payload") if fallback_snapshot else None
 
+        # Always fresh-fetch update logs (they can arrive outside imports)
+        if default_payload and isinstance(default_payload, dict):
+            fresh_logs = await self.ms_repository.get_update_logs_by_version(
+                schedule_version_id,
+            )
+            default_payload = self._inject_fresh_updates(default_payload, fresh_logs)
+
         return {
             "project_id": project_id,
             "schedule_version_id": schedule_version_id,
@@ -524,11 +661,20 @@ class ScheduleViewService:
                 checksum=checksum,
             )
 
+        view_payload = snapshot.get("payload")
+
+        # Always fresh-fetch update logs (they can arrive outside imports)
+        if view_payload and isinstance(view_payload, dict):
+            fresh_logs = await self.ms_repository.get_update_logs_by_version(
+                schedule_version_id,
+            )
+            view_payload = self._inject_fresh_updates(view_payload, fresh_logs)
+
         return {
             "project_id": project_id,
             "schedule_version_id": schedule_version_id,
             "view_key": definition["view_key"],
             "view_name": definition["view_name"],
             "computed_at": snapshot.get("computed_at"),
-            "payload": snapshot.get("payload"),
+            "payload": view_payload,
         }

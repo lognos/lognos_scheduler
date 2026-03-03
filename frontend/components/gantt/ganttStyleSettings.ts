@@ -40,14 +40,38 @@ export interface GanttBaselineStyle {
   legendBg: string;
 }
 
+export interface GanttUpdateIndicatorStyle {
+  /** Indicator circle diameter in px */
+  size: number;
+  /** Background color for the indicator circle */
+  bg: string;
+  /** Text color for the "!" symbol */
+  textColor: string;
+  /** Font size for the "!" symbol */
+  fontSize: string;
+  /** Font weight for the "!" */
+  fontWeight: string;
+  /** Horizontal offset from the end of the bar, in px */
+  offsetRight: number;
+
+  /** Tooltip max width */
+  tooltipMaxWidth: number;
+
+  /** Type badge colors: bg, text for each update_type */
+  typeBadge: {
+    delay: { bg: string; text: string };
+    completion: { bg: string; text: string };
+    start: { bg: string; text: string };
+  };
+
+  /** Legend swatch color */
+  legendBg: string;
+  legendTextColor: string;
+}
+
 export interface GanttStyleSettings {
   baseline: GanttBaselineStyle;
-  // Future sections:
-  // row: GanttRowStyle;
-  // bar: GanttBarStyle;
-  // milestone: GanttMilestoneStyle;
-  // summary: GanttSummaryStyle;
-  // relationships: GanttRelationshipStyle;
+  updates: GanttUpdateIndicatorStyle;
 }
 
 const ganttStyleSettings: Readonly<GanttStyleSettings> = Object.freeze({
@@ -67,6 +91,25 @@ const ganttStyleSettings: Readonly<GanttStyleSettings> = Object.freeze({
 
     legendBorderColor: 'rgb(107, 114, 128)',
     legendBg: 'rgba(55, 65, 81, 0.30)',
+  },
+  updates: {
+    size: 16,
+    bg: 'rgb(217, 119, 6)',
+    textColor: 'rgb(255, 255, 255)',
+    fontSize: '10px',
+    fontWeight: '700',
+    offsetRight: -20,
+
+    tooltipMaxWidth: 320,
+
+    typeBadge: {
+      delay: { bg: 'rgba(239, 68, 68, 0.15)', text: 'rgb(248, 113, 113)' },
+      completion: { bg: 'rgba(16, 185, 129, 0.15)', text: 'rgb(52, 211, 153)' },
+      start: { bg: 'rgba(59, 130, 246, 0.15)', text: 'rgb(96, 165, 250)' },
+    },
+
+    legendBg: 'rgb(217, 119, 6)',
+    legendTextColor: 'rgb(255, 255, 255)',
   },
 });
 

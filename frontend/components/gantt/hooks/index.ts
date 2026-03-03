@@ -5,6 +5,7 @@
 export { useTimeline } from './useTimeline';
 export { useBarPositions } from './useBarPositions';
 export { useRelationshipPaths } from './useRelationshipPaths';
+export { useActivityUpdates } from './useActivityUpdates';
 export type {
   SortMode,
   TimelineData,
@@ -16,3 +17,4 @@ export type {
   RelationshipType,
   ScheduleRelationship,
 } from './types';
+export type { ActivityUpdatesMap } from './useActivityUpdates';

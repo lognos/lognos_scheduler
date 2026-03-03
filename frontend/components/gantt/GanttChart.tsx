@@ -8,8 +8,8 @@
 import React from 'react';
 import { format, parseISO, differenceInDays } from 'date-fns';
 import { Calendar } from 'lucide-react';
-import { ScheduleItem, ScheduleRelationship } from '@/types';
-import { useTimeline, useBarPositions, PositionedItem, TimelineMonth, YearGroup } from './hooks';
+import { ScheduleItem, ScheduleRelationship, ActivityUpdate } from '@/types';
+import { useTimeline, useBarPositions, useActivityUpdates, PositionedItem, TimelineMonth, YearGroup } from './hooks';
 import { RelationshipArrows } from './RelationshipArrows';
 import ganttStyleSettings from './ganttStyleSettings';
 
@@ -17,6 +17,8 @@ interface GanttChartProps {
   data: ScheduleItem[];
   /** Optional relationships for dependency arrows */
   relationships?: ScheduleRelationship[];
+  /** Optional activity updates for indicator display */
+  activityUpdates?: ActivityUpdate[];
   loading?: boolean;
   /** Show only critical path relationships (default: true) */
   showCriticalOnly?: boolean;
@@ -27,6 +29,7 @@ const ROW_HEIGHT = 44; // Height of each row in pixels (including spacing)
 const GanttChart: React.FC<GanttChartProps> = ({
   data,
   relationships,
+  activityUpdates,
   loading,
   showCriticalOnly = true,
 }) => {
@@ -38,6 +41,7 @@ const GanttChart: React.FC<GanttChartProps> = ({
     totalDays: timeline.totalDays,
     sortMode: 'start-date',
   });
+  const updatesMap = useActivityUpdates(activityUpdates);
 
   if (loading) {
     return <LoadingSkeleton />;
@@ -70,7 +74,12 @@ const GanttChart: React.FC<GanttChartProps> = ({
       <div className="relative" style={{ minHeight: totalHeight }}>
         <div className="space-y-3">
           {positionedItems.map((item, index) => (
-            <GanttRow key={item.s_item_id} item={item} colorIndex={index} />
+            <GanttRow
+              key={item.s_item_id}
+              item={item}
+              colorIndex={index}
+              activityUpdates={updatesMap.byActivity.get(item.s_item_id)}
+            />
           ))}
         </div>
 
@@ -165,12 +174,14 @@ function TimelineHeader({ months, yearGroups }: TimelineHeaderProps) {
 interface GanttRowProps {
   item: PositionedItem;
   colorIndex: number;
+  activityUpdates?: ActivityUpdate[];
 }
 
-function GanttRow({ item, colorIndex }: GanttRowProps) {
+function GanttRow({ item, colorIndex, activityUpdates }: GanttRowProps) {
   const barColor = getBarColor(colorIndex);
   const isMilestone = item.working_days === 0 || item.calendar_days === 0;
   const bs = ganttStyleSettings.baseline;
+  const us = ganttStyleSettings.updates;
   const hasBaseline = item.baselineStartPercentage !== undefined && item.baselineWidthPercentage !== undefined;
 
   const tooltipText = buildReportTooltip(item);
@@ -258,6 +269,38 @@ function GanttRow({ item, colorIndex }: GanttRowProps) {
             }}
             title={`Baseline: ${format(parseISO(item.baseline_start!), 'MMM dd, yyyy')}`}
           />
+        )}
+
+        {/* Update indicator - always visible in report view */}
+        {activityUpdates && activityUpdates.length > 0 && (
+          <div
+            className="absolute flex items-center"
+            style={{
+              left: isMilestone
+                ? `${item.startPercentage}%`
+                : `${item.startPercentage + item.widthPercentage}%`,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              marginLeft: '4px',
+            }}
+          >
+            <div
+              className="rounded-full flex items-center justify-center"
+              style={{
+                width: `${us.size}px`,
+                height: `${us.size}px`,
+                backgroundColor: us.bg,
+                color: us.textColor,
+                fontSize: us.fontSize,
+                fontWeight: us.fontWeight,
+              }}
+              title={activityUpdates
+                .map((u) => `[${u.update_type.toUpperCase()}] ${u.details}`)
+                .join('\n')}
+            >
+              !
+            </div>
+          </div>
         )}
       </div>
     </div>
