@@ -48,6 +48,7 @@ class ScheduleViewResponse(BaseModel):
 @router.get("/preload", response_model=ScheduleViewsPreloadResponse)
 async def preload_schedule_views(
     lognos_project_id: str = Header(..., alias="Lognos-ProjectID"),
+    baseline_mode: str = "own",
 ):
     """Preload default schedule view + metadata for fast first render."""
     supabase = get_supabase()
@@ -57,7 +58,7 @@ async def preload_schedule_views(
     )
 
     try:
-        result = await service.preload(project_id=lognos_project_id)
+        result = await service.preload(project_id=lognos_project_id, baseline_mode=baseline_mode)
         return ScheduleViewsPreloadResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -70,6 +71,7 @@ async def preload_schedule_views(
 async def get_schedule_view(
     view_key: str,
     lognos_project_id: str = Header(..., alias="Lognos-ProjectID"),
+    baseline_mode: str = "own",
 ):
     """Return a single persisted schedule view payload."""
     supabase = get_supabase()
@@ -79,7 +81,7 @@ async def get_schedule_view(
     )
 
     try:
-        result = await service.get_view(project_id=lognos_project_id, view_key=view_key)
+        result = await service.get_view(project_id=lognos_project_id, view_key=view_key, baseline_mode=baseline_mode)
         return ScheduleViewResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

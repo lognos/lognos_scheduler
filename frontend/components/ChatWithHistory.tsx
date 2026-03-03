@@ -33,6 +33,7 @@ export function ChatWithHistory() {
         scheduleViews,
         activeScheduleViewKey,
         switchScheduleView,
+        switchBaselineMode,
         isPreloadingSchedule,
     } = useAGUIStream();
 
@@ -114,6 +115,7 @@ export function ChatWithHistory() {
                 scheduleViews={scheduleViews}
                 activeScheduleViewKey={activeScheduleViewKey}
                 onSelectScheduleView={switchScheduleView}
+                onBaselineModeChange={switchBaselineMode}
                 isPreloadingSchedule={isPreloadingSchedule}
             />
 

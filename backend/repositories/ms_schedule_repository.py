@@ -80,7 +80,35 @@ class MSScheduleRepository:
             return result.data
         except Exception:
             return None
-    
+
+    @logfire.instrument("ms_repo.get_previous_version")
+    async def get_previous_version(
+        self, project_name: str, current_version_number: int,
+    ) -> Optional[dict]:
+        """Get the version immediately before the current one by version_number."""
+        result = self._table('schedule_versions') \
+            .select('*') \
+            .eq('project_name', project_name) \
+            .lt('version_number', current_version_number) \
+            .order('version_number', desc=True) \
+            .limit(1) \
+            .execute()
+        return result.data[0] if result.data else None
+
+    @logfire.instrument("ms_repo.get_baseline_version")
+    async def get_baseline_version(self, project_name: str) -> Optional[dict]:
+        """Get the version flagged as baseline for a project."""
+        try:
+            result = self._table('schedule_versions') \
+                .select('*') \
+                .eq('project_name', project_name) \
+                .eq('is_baseline', True) \
+                .single() \
+                .execute()
+            return result.data
+        except Exception:
+            return None
+
     # =========================================================================
     # Activity Operations
     # =========================================================================

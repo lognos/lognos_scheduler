@@ -87,6 +87,14 @@ export interface AvailableActivityCodes {
 export type RelationshipType = 'FS' | 'SS' | 'FF' | 'SF';
 
 /**
+ * Baseline comparison mode
+ * - own: Current version's embedded baseline (default)
+ * - previous_version: Start/finish dates from the previous schedule version
+ * - database_baseline: Start/finish dates from the version flagged is_baseline=true
+ */
+export type BaselineMode = 'own' | 'previous_version' | 'database_baseline';
+
+/**
  * A user-reported activity update (delay, completion, start)
  */
 export interface ActivityUpdate {
@@ -152,6 +160,19 @@ export interface GanttChartData {
   preserve_order?: boolean;
   /** Whether baseline data is available for this schedule version */
   has_baseline?: boolean;
+
+  /** Active baseline comparison mode */
+  baseline_mode?: BaselineMode;
+
+  /** Label describing what the baseline represents (e.g. version name) */
+  baseline_label?: string | null;
+
+  /** Which baseline modes are available for this project */
+  available_baseline_modes?: {
+    own: boolean;
+    previous_version: boolean;
+    database_baseline: boolean;
+  };
 
   /** User-reported activity updates for indicator display */
   activity_updates?: ActivityUpdate[];

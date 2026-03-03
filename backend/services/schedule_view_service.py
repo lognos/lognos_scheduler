@@ -97,6 +97,43 @@ class ScheduleViewService:
             return True
         return False
 
+    async def _build_cross_version_baseline(
+        self, reference_version_id: int,
+    ) -> dict[str, tuple]:
+        """Build ms_uid -> (start_dt, finish_dt, duration_d) map from a reference version.
+
+        Args:
+            reference_version_id: PK of the reference schedule_versions row.
+        """
+        ref_activities = await self.ms_repository.get_activities_by_version(
+            version_id=reference_version_id,
+            limit=5000,
+            include_summary=True,
+        )
+        lookup: dict[str, tuple] = {}
+        for a in ref_activities:
+            ms_uid = a.get("ms_uid")
+            if ms_uid is None:
+                continue
+            key = str(ms_uid)
+            start_dt = self._normalize_datetime(a.get("start"))
+            finish_dt = self._normalize_datetime(a.get("finish"))
+            dur = float(a.get("duration_d") or 0) if a.get("duration_d") is not None else None
+            lookup[key] = (start_dt, finish_dt, dur)
+        return lookup
+
+    async def _resolve_baseline_mode_metadata(
+        self, project_name: str, current_version_number: int, current_version_id: int,
+    ) -> dict:
+        """Check which baseline modes are available for a project."""
+        prev = await self.ms_repository.get_previous_version(project_name, current_version_number)
+        bl = await self.ms_repository.get_baseline_version(project_name)
+        return {
+            "own": True,
+            "previous_version": prev is not None,
+            "database_baseline": bl is not None and bl["id"] != current_version_id,
+        }
+
     @staticmethod
     def _build_system_configs(reference_date: date) -> dict[str, dict]:
         return {
@@ -174,6 +211,7 @@ class ScheduleViewService:
         schedule_version_id: int,
         view_key: str,
         config: dict,
+        baseline_mode: str = "own",
     ) -> dict:
         activities = await self.ms_repository.get_activities_by_version(
             version_id=schedule_version_id,
@@ -227,6 +265,41 @@ class ScheduleViewService:
                     "baseline_duration_d": float(bl_dur_raw) if bl_dur_raw is not None else None,
                 }
             )
+
+        # --- Cross-version baseline overlay ---
+        baseline_label: Optional[str] = None
+        if baseline_mode in ("previous_version", "database_baseline"):
+            current_version = await self.ms_repository.get_version(schedule_version_id)
+            ref_version = None
+            if baseline_mode == "previous_version" and current_version:
+                ref_version = await self.ms_repository.get_previous_version(
+                    current_version["project_name"],
+                    current_version["version_number"],
+                )
+            elif baseline_mode == "database_baseline" and current_version:
+                ref_version = await self.ms_repository.get_baseline_version(
+                    current_version["project_name"],
+                )
+
+            if ref_version:
+                cross_baseline = await self._build_cross_version_baseline(ref_version["id"])
+                baseline_label = ref_version.get("version_name") or str(ref_version.get("version_number", ""))
+                for item in parsed:
+                    ref = cross_baseline.get(item["s_item_id"])
+                    if ref:
+                        item["baseline_start_dt"] = ref[0]
+                        item["baseline_finish_dt"] = ref[1]
+                        item["baseline_duration_d"] = ref[2]
+                    else:
+                        item["baseline_start_dt"] = None
+                        item["baseline_finish_dt"] = None
+                        item["baseline_duration_d"] = None
+            else:
+                # Reference version not found; clear all baseline
+                for item in parsed:
+                    item["baseline_start_dt"] = None
+                    item["baseline_finish_dt"] = None
+                    item["baseline_duration_d"] = None
 
         date_start = config.get("date_start")
         date_end = config.get("date_end")
@@ -462,6 +535,8 @@ class ScheduleViewService:
             "grouping": None,
             "preserve_order": True,
             "has_baseline": has_baseline,
+            "baseline_mode": baseline_mode,
+            "baseline_label": baseline_label,
             "activity_updates": activity_updates_payload,
         }
 
@@ -546,7 +621,7 @@ class ScheduleViewService:
         return payload
 
     @logfire.instrument("schedule_view_service.preload")
-    async def preload(self, *, project_id: str) -> dict:
+    async def preload(self, *, project_id: str, baseline_mode: str = "own") -> dict:
         version = await self.resolve_current_version(project_id)
         if not version:
             raise ValueError(f"No schedule versions found for project '{project_id}'")
@@ -558,6 +633,15 @@ class ScheduleViewService:
             reference_date=date.today(),
         )
 
+        # Resolve available baseline modes for this project
+        available_baseline_modes = await self._resolve_baseline_mode_metadata(
+            version["project_name"],
+            version["version_number"],
+            schedule_version_id,
+        )
+
+        use_cross_baseline = baseline_mode != "own" and available_baseline_modes.get(baseline_mode, False)
+
         views = []
         default_payload = None
         for definition in definitions:
@@ -566,19 +650,24 @@ class ScheduleViewService:
                 view_definition_id=definition["id"],
                 schedule_version_id=schedule_version_id,
             )
-            if self._should_refresh_snapshot(view_key=definition["view_key"], snapshot=snapshot):
+            if use_cross_baseline or self._should_refresh_snapshot(view_key=definition["view_key"], snapshot=snapshot):
                 payload = await self.build_view_payload(
                     schedule_version_id=schedule_version_id,
                     view_key=definition["view_key"],
                     config=config,
+                    baseline_mode=baseline_mode if use_cross_baseline else "own",
                 )
-                checksum = sha1(str(payload).encode("utf-8")).hexdigest()
-                snapshot = await self.view_repository.upsert_snapshot(
-                    view_definition_id=definition["id"],
-                    schedule_version_id=schedule_version_id,
-                    payload=payload,
-                    checksum=checksum,
-                )
+                if not use_cross_baseline:
+                    checksum = sha1(str(payload).encode("utf-8")).hexdigest()
+                    snapshot = await self.view_repository.upsert_snapshot(
+                        view_definition_id=definition["id"],
+                        schedule_version_id=schedule_version_id,
+                        payload=payload,
+                        checksum=checksum,
+                    )
+                else:
+                    # For cross-baseline: use the computed payload directly, don't save to snapshot
+                    snapshot = {"payload": payload, "computed_at": datetime.utcnow().isoformat()}
 
             views.append(
                 {
@@ -608,6 +697,11 @@ class ScheduleViewService:
             )
             default_payload = self._inject_fresh_updates(default_payload, fresh_logs)
 
+        # Inject baseline availability metadata into default payload
+        if default_payload and isinstance(default_payload, dict):
+            default_payload = dict(default_payload)
+            default_payload["available_baseline_modes"] = available_baseline_modes
+
         return {
             "project_id": project_id,
             "schedule_version_id": schedule_version_id,
@@ -617,13 +711,23 @@ class ScheduleViewService:
         }
 
     @logfire.instrument("schedule_view_service.get_view")
-    async def get_view(self, *, project_id: str, view_key: str) -> dict:
+    async def get_view(self, *, project_id: str, view_key: str, baseline_mode: str = "own") -> dict:
         if view_key not in self.VIEW_KEYS:
             raise ValueError(f"Unsupported view_key '{view_key}'")
 
         version = await self.resolve_current_version(project_id)
         if not version:
             raise ValueError(f"No schedule versions found for project '{project_id}'")
+
+        schedule_version_id = int(version["id"])
+
+        # Resolve available baseline modes
+        available_baseline_modes = await self._resolve_baseline_mode_metadata(
+            version["project_name"],
+            version["version_number"],
+            schedule_version_id,
+        )
+        use_cross_baseline = baseline_mode != "own" and available_baseline_modes.get(baseline_mode, False)
 
         schedule_version_id = int(version["id"])
         definition = await self.view_repository.get_definition(
@@ -647,19 +751,23 @@ class ScheduleViewService:
             schedule_version_id=schedule_version_id,
         )
 
-        if self._should_refresh_snapshot(view_key=view_key, snapshot=snapshot):
+        if use_cross_baseline or self._should_refresh_snapshot(view_key=view_key, snapshot=snapshot):
             payload = await self.build_view_payload(
                 schedule_version_id=schedule_version_id,
                 view_key=view_key,
                 config=definition.get("config") or {},
+                baseline_mode=baseline_mode if use_cross_baseline else "own",
             )
-            checksum = sha1(str(payload).encode("utf-8")).hexdigest()
-            snapshot = await self.view_repository.upsert_snapshot(
-                view_definition_id=definition["id"],
-                schedule_version_id=schedule_version_id,
-                payload=payload,
-                checksum=checksum,
-            )
+            if not use_cross_baseline:
+                checksum = sha1(str(payload).encode("utf-8")).hexdigest()
+                snapshot = await self.view_repository.upsert_snapshot(
+                    view_definition_id=definition["id"],
+                    schedule_version_id=schedule_version_id,
+                    payload=payload,
+                    checksum=checksum,
+                )
+            else:
+                snapshot = {"payload": payload, "computed_at": datetime.utcnow().isoformat()}
 
         view_payload = snapshot.get("payload")
 
@@ -669,6 +777,11 @@ class ScheduleViewService:
                 schedule_version_id,
             )
             view_payload = self._inject_fresh_updates(view_payload, fresh_logs)
+
+        # Inject baseline availability metadata
+        if view_payload and isinstance(view_payload, dict):
+            view_payload = dict(view_payload)
+            view_payload["available_baseline_modes"] = available_baseline_modes
 
         return {
             "project_id": project_id,

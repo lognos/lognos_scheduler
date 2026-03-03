@@ -9,7 +9,7 @@ import { ChatHeader } from './ChatHeader';
 import { ReviewBadge, ReviewItem } from './ReviewBadge';
 import { GanttPanel } from './gantt';
 import { useUser } from '@/lib/contexts/UserContext';
-import { GanttPanelState, ScheduleViewKey, ScheduleViewMeta } from '@/types/schedule';
+import { GanttPanelState, ScheduleViewKey, ScheduleViewMeta, BaselineMode } from '@/types/schedule';
 
 // Mock data for review items - TODO: Replace with usePendingActions hook
 const mockReviewItems: ReviewItem[] = [
@@ -29,6 +29,7 @@ interface ChatLayoutProps {
     scheduleViews?: ScheduleViewMeta[];
     activeScheduleViewKey?: ScheduleViewKey | null;
     onSelectScheduleView?: (viewKey: ScheduleViewKey) => void;
+    onBaselineModeChange?: (mode: BaselineMode) => void;
     isPreloadingSchedule?: boolean;
 }
 
@@ -45,6 +46,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
     scheduleViews,
     activeScheduleViewKey,
     onSelectScheduleView,
+    onBaselineModeChange,
     isPreloadingSchedule,
 }) => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -146,6 +148,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
                     availableViews={scheduleViews || []}
                     activeViewKey={activeScheduleViewKey || undefined}
                     onSelectView={onSelectScheduleView}
+                    onBaselineModeChange={onBaselineModeChange}
                     isViewLoading={isPreloadingSchedule}
                 />
             )}

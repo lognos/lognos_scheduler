@@ -10,7 +10,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, isValid, parseISO, differenceInDays } from 'date-fns';
 import { X, Calendar, Filter, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
-import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate } from '@/types/schedule';
+import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate, BaselineMode } from '@/types/schedule';
 import {
   useTimeline,
   useBarPositions,
@@ -31,6 +31,7 @@ interface GanttPanelProps {
   availableViews?: ScheduleViewMeta[];
   activeViewKey?: ScheduleViewKey;
   onSelectView?: (viewKey: ScheduleViewKey) => void;
+  onBaselineModeChange?: (mode: BaselineMode) => void;
   isViewLoading?: boolean;
 }
 
@@ -64,11 +65,13 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   availableViews = [],
   activeViewKey,
   onSelectView,
+  onBaselineModeChange,
   isViewLoading = false,
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
   const [showLinks, setShowLinks] = useState<boolean>(true);
   const [showBaseline, setShowBaseline] = useState<boolean>(true);
+  const [baselineMode, setBaselineMode] = useState<BaselineMode>(data.baseline_mode || 'own');
   const [showUpdates, setShowUpdates] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -410,18 +413,49 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
             )}
 
             {data.has_baseline && (
-              <button
-                type="button"
-                onClick={() => setShowBaseline((previous) => !previous)}
-                className={`h-[26px] px-2 rounded-full border flex items-center gap-1 text-xs transition-colors ${
-                  showBaseline
-                    ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
-                    : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
-                }`}
-                title={showBaseline ? 'Hide baseline' : 'Show baseline'}
-              >
-                Baseline
-              </button>
+              <div className="relative group">
+                <button
+                  type="button"
+                  onClick={() => setShowBaseline((previous) => !previous)}
+                  className={`h-[26px] px-2 rounded-full border flex items-center gap-1 text-xs transition-colors ${
+                    showBaseline
+                      ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
+                      : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
+                  }`}
+                  title={showBaseline ? 'Hide baseline' : 'Show baseline'}
+                >
+                  {baselineMode === 'own' ? 'Baseline' : baselineMode === 'previous_version' ? 'Baseline (Prev)' : 'Baseline (DB)'}
+                </button>
+
+                <div className="absolute left-0 top-full mt-1 min-w-48 rounded-md border border-dark-600 bg-[#111827] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-30">
+                  {([
+                    { mode: 'own' as BaselineMode, label: 'Own Baseline', available: true },
+                    { mode: 'previous_version' as BaselineMode, label: `Previous Version${data.baseline_mode === 'previous_version' && data.baseline_label ? ` (${data.baseline_label})` : ''}`, available: data.available_baseline_modes?.previous_version ?? false },
+                    { mode: 'database_baseline' as BaselineMode, label: `Database Baseline${data.baseline_mode === 'database_baseline' && data.baseline_label ? ` (${data.baseline_label})` : ''}`, available: data.available_baseline_modes?.database_baseline ?? false },
+                  ]).map((opt, index) => (
+                    <button
+                      key={opt.mode}
+                      type="button"
+                      disabled={!opt.available || isViewLoading}
+                      onClick={() => {
+                        if (opt.mode !== baselineMode) {
+                          setBaselineMode(opt.mode);
+                          setShowBaseline(true);
+                          onBaselineModeChange?.(opt.mode);
+                        }
+                      }}
+                      className={`w-full text-left px-3 py-2 text-xs transition-colors disabled:text-gray-600 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
+                        baselineMode === opt.mode
+                          ? 'text-blue-300 bg-blue-500/10'
+                          : 'text-gray-200 hover:bg-dark-700/70'
+                      } ${index === 0 ? 'rounded-t-md' : ''} ${index === 2 ? 'rounded-b-md' : ''}`}
+                    >
+                      <span className="mr-2">{baselineMode === opt.mode ? '●' : '○'}</span>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
 
             {updatesMap.hasUpdates && (
@@ -549,6 +583,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         hasRelationships={!!data.relationships && data.relationships.length > 0}
         hasBaseline={!!data.has_baseline}
         showBaseline={showBaseline}
+        baselineMode={baselineMode}
+        baselineLabel={data.baseline_label}
         hasUpdates={updatesMap.hasUpdates}
         showUpdates={showUpdates}
       />
@@ -931,11 +967,13 @@ interface LegendProps {
   hasRelationships?: boolean;
   hasBaseline?: boolean;
   showBaseline?: boolean;
+  baselineMode?: BaselineMode;
+  baselineLabel?: string | null;
   hasUpdates?: boolean;
   showUpdates?: boolean;
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, hasUpdates, showUpdates }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
 
@@ -996,7 +1034,7 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, hasUpda
                   borderColor: bs.legendBorderColor,
                 }}
               />
-              <span>Baseline</span>
+              <span>{baselineMode === 'previous_version' ? `vs. Previous${baselineLabel ? ` (${baselineLabel})` : ''}` : baselineMode === 'database_baseline' ? `vs. DB Baseline${baselineLabel ? ` (${baselineLabel})` : ''}` : 'Baseline'}</span>
             </div>
           </>
         )}

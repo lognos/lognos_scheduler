@@ -85,7 +85,7 @@ BaselineMode = "own" | "previous_version" | "database_baseline"
 async def get_previous_version(
     self, project_name: str, current_version_number: int
 ) -> Optional[dict]:
-    """Get the version immediately before the current one."""
+    """Get the version immediately before the current one (by version_number)."""
     result = (
         self._table("schedule_versions")
         .select("*")
@@ -123,7 +123,11 @@ Add a method that fetches activities from a reference version and returns a `ms_
 async def _build_cross_version_baseline(
     self, reference_version_id: int
 ) -> dict[str, tuple[Optional[datetime], Optional[datetime], Optional[float]]]:
-    """Build a ms_uid -> (start_dt, finish_dt, duration_d) map from a reference version."""
+    """Build a ms_uid -> (start_dt, finish_dt, duration_d) map from a reference version.
+    
+    Args:
+        reference_version_id: The PK (id) of the reference schedule_versions row.
+    """
     ref_activities = await self.ms_repository.get_activities_by_version(
         version_id=reference_version_id,
         limit=5000,
@@ -346,8 +350,8 @@ User selects "Previous Version" from dropdown
   → GanttPanel calls onBaselineModeChange("previous_version")
   → Parent re-fetches: GET /schedule-views/{view_key}?baseline_mode=previous_version
   → API passes baseline_mode to service
-  → Service resolves version N-1 (id=20) for BIO4-24101
-  → Service fetches activities from version 20
+  → Service resolves version N-1 (version_number=260101) for BIO4-24101
+  → Service fetches activities from version 260101
   → Builds ms_uid → (start, finish) lookup
   → Overlays onto current version's parsed items as baseline_start_dt/baseline_finish_dt
   → Returns payload with has_baseline=true, baseline_mode="previous_version", 
@@ -431,10 +435,10 @@ This lets the frontend gray out unavailable options without making an API call t
 
 1. Open BIO4-24101 Gantt panel (current = version 21)
 2. Confirm "Own Baseline" shows the existing baseline ghost bars (current behavior)
-3. Switch to "Previous Version" → ghost bars show version 20's dates for matching activities
-4. Verify slippage tooltip shows difference between v21 and v20 dates
-5. Switch to "Database Baseline" → ghost bars show version 0 (baseline) dates
-6. Verify activities not present in v0 have no ghost bar
+3. Switch to "Previous Version" → ghost bars show version 260101's dates for matching activities
+4. Verify slippage tooltip shows difference between current (260129) and previous (260101) dates
+5. Switch to "Database Baseline" → ghost bars show version 250710 (baseline) dates
+6. Verify activities not present in version 250710 have no ghost bar
 7. Toggle baseline off → ghost bars disappear regardless of mode
 8. Toggle back on → ghost bars reappear with the last selected mode
 9. Switch to a view with few activities (Critical Path) → baseline mode still works

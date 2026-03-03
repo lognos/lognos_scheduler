@@ -8,6 +8,7 @@ import {
     ScheduleViewMeta,
     ScheduleViewsPreloadResponse,
     ScheduleViewResponse,
+    BaselineMode,
 } from '@/types/schedule';
 
 export type Message = {
@@ -87,6 +88,7 @@ export function useAGUIStream() {
     const [activeScheduleViewKey, setActiveScheduleViewKey] = useState<ScheduleViewKey | null>(null);
     const [isPreloadingSchedule, setIsPreloadingSchedule] = useState(false);
     const [scheduleViewCache, setScheduleViewCache] = useState<Record<string, GanttChartData>>({});
+    const [activeBaselineMode, setActiveBaselineMode] = useState<BaselineMode>('own');
 
     useEffect(() => {
         // Initialize conversation ID on client side only
@@ -203,6 +205,43 @@ export function useAGUIStream() {
             setIsPreloadingSchedule(false);
         }
     }, [currentProject?.project_id, scheduleViewCache]);
+
+    const switchBaselineMode = useCallback(async (mode: BaselineMode) => {
+        if (!currentProject?.project_id) return;
+
+        setActiveBaselineMode(mode);
+
+        // Always re-fetch with the new baseline_mode (bypass cache)
+        const viewKey = activeScheduleViewKey || 'critical_path';
+        if (viewKey === 'custom') return;
+
+        setIsPreloadingSchedule(true);
+        try {
+            const url = `http://localhost:8500/api/v1/schedule-views/${viewKey}?baseline_mode=${mode}`;
+            const response = await fetch(url, {
+                headers: {
+                    'Lognos-ProjectID': currentProject.project_id,
+                },
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to switch baseline mode (${response.status})`);
+            }
+
+            const data: ScheduleViewResponse = await response.json();
+            if (!data.payload) return;
+
+            // Don't cache cross-version baselines (they depend on mode)
+            if (mode === 'own') {
+                setScheduleViewCache((prev) => ({ ...prev, [viewKey]: data.payload }));
+            }
+            setGanttPanel({ isVisible: true, data: data.payload, isLoading: false });
+        } catch (error) {
+            console.error(`Failed to switch baseline mode to ${mode}`, error);
+        } finally {
+            setIsPreloadingSchedule(false);
+        }
+    }, [currentProject?.project_id, activeScheduleViewKey]);
 
     const sendMessage = useCallback(async (content: string) => {
         if (!content.trim()) return;
@@ -427,6 +466,7 @@ export function useAGUIStream() {
         scheduleViews,
         activeScheduleViewKey,
         switchScheduleView,
+        switchBaselineMode,
         isPreloadingSchedule,
     };
 }
