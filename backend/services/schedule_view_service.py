@@ -89,6 +89,9 @@ class ScheduleViewService:
         payload = snapshot.get("payload")
         if view_key == "critical_path" and cls._is_effectively_empty_payload(payload):
             return True
+        # Refresh stale snapshots that predate the baseline feature
+        if isinstance(payload, dict) and "has_baseline" not in payload:
+            return True
         return False
 
     @staticmethod
@@ -189,6 +192,9 @@ class ScheduleViewService:
         for a in activities:
             start_dt = self._normalize_datetime(a.get("start"))
             finish_dt = self._normalize_datetime(a.get("finish"))
+            bl_start_raw = a.get("baseline_start")
+            bl_finish_raw = a.get("baseline_finish")
+            bl_dur_raw = a.get("baseline_duration_d")
             parsed.append(
                 {
                     "raw": a,
@@ -205,6 +211,9 @@ class ScheduleViewService:
                     "is_summary": bool(a.get("is_summary", False)),
                     "is_critical": self._is_critical(a),
                     "level": self._wbs_level(a.get("wbs")),
+                    "baseline_start_dt": self._normalize_datetime(bl_start_raw),
+                    "baseline_finish_dt": self._normalize_datetime(bl_finish_raw),
+                    "baseline_duration_d": float(bl_dur_raw) if bl_dur_raw is not None else None,
                 }
             )
 
@@ -308,6 +317,8 @@ class ScheduleViewService:
         for item in filtered_items:
             start_text = item["start_dt"].date().isoformat() if item["start_dt"] else ""
             finish_text = item["finish_dt"].date().isoformat() if item["finish_dt"] else ""
+            bl_start_dt = item.get("baseline_start_dt")
+            bl_finish_dt = item.get("baseline_finish_dt")
             item_payload = {
                 "id": int(item["id"]),
                 "s_item_id": item["s_item_id"],
@@ -325,6 +336,9 @@ class ScheduleViewService:
                 "parent_id": parent_id_for(item),
                 "children_count": summary_children_count.get(item["s_item_id"], 0),
                 "group_name": None,
+                "baseline_start": bl_start_dt.date().isoformat() if bl_start_dt else None,
+                "baseline_finish": bl_finish_dt.date().isoformat() if bl_finish_dt else None,
+                "baseline_duration_d": item.get("baseline_duration_d"),
             }
             items_payload.append(item_payload)
 
@@ -372,6 +386,12 @@ class ScheduleViewService:
         else:
             critical_span = 0
 
+        has_baseline = any(
+            item.get("baseline_start_dt") is not None
+            for item in filtered_items
+            if not item["is_summary"]
+        )
+
         return {
             "items": items_payload,
             "relationships": relationships_payload,
@@ -392,6 +412,7 @@ class ScheduleViewService:
             "available_activity_codes": {},
             "grouping": None,
             "preserve_order": True,
+            "has_baseline": has_baseline,
         }
 
     @logfire.instrument("schedule_view_service.preload")

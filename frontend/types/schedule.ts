@@ -32,6 +32,14 @@ export interface ScheduleItem {
   /** Activity status: not_started, in_progress, completed */
   status: 'not_started' | 'in_progress' | 'completed';
 
+  // Baseline fields (MS Project schedules)
+  /** Baseline start date (ISO format), null if no baseline set */
+  baseline_start?: string | null;
+  /** Baseline finish date (ISO format), null if no baseline set */
+  baseline_finish?: string | null;
+  /** Baseline duration in working days, null if no baseline set */
+  baseline_duration_d?: number | null;
+
   // Hierarchy fields for grouped display
   /** Display level: 1 = summary/group, 2 = detail activity */
   level?: number;
@@ -120,6 +128,8 @@ export interface GanttChartData {
   grouping?: string | null;
   /** If true, items are pre-sorted (MS Project hierarchy) - don't re-sort on frontend */
   preserve_order?: boolean;
+  /** Whether baseline data is available for this schedule version */
+  has_baseline?: boolean;
 }
 
 /**

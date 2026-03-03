@@ -49,6 +49,10 @@ export interface PositionedItem extends ScheduleItem {
   startPercentage: number;
   widthPercentage: number;
   duration: number;
+  /** Baseline bar start as percentage (0-100), undefined if no baseline */
+  baselineStartPercentage?: number;
+  /** Baseline bar width as percentage, undefined if no baseline */
+  baselineWidthPercentage?: number;
 }
 
 /**

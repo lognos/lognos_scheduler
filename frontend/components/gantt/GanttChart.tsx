@@ -6,11 +6,12 @@
  */
 
 import React from 'react';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, differenceInDays } from 'date-fns';
 import { Calendar } from 'lucide-react';
 import { ScheduleItem, ScheduleRelationship } from '@/types';
 import { useTimeline, useBarPositions, PositionedItem, TimelineMonth, YearGroup } from './hooks';
 import { RelationshipArrows } from './RelationshipArrows';
+import ganttStyleSettings from './ganttStyleSettings';
 
 interface GanttChartProps {
   data: ScheduleItem[];
@@ -169,6 +170,10 @@ interface GanttRowProps {
 function GanttRow({ item, colorIndex }: GanttRowProps) {
   const barColor = getBarColor(colorIndex);
   const isMilestone = item.working_days === 0 || item.calendar_days === 0;
+  const bs = ganttStyleSettings.baseline;
+  const hasBaseline = item.baselineStartPercentage !== undefined && item.baselineWidthPercentage !== undefined;
+
+  const tooltipText = buildReportTooltip(item);
 
   return (
     <div className="flex items-center group">
@@ -191,12 +196,7 @@ function GanttRow({ item, colorIndex }: GanttRowProps) {
               height: '14px',
               backgroundColor: barColor,
             }}
-            title={`${item.s_item}
-Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
-End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
-Working Days: ${item.working_days}d
-Calendar Days: ${item.calendar_days}d
-Total Float: ${item.total_float}d`}
+            title={tooltipText}
           />
         ) : (
           <div
@@ -208,12 +208,7 @@ Total Float: ${item.total_float}d`}
               minWidth: '20px',
               color: 'white',
             }}
-            title={`${item.s_item}
-Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
-End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
-Working Days: ${item.working_days}d
-Calendar Days: ${item.calendar_days}d
-Total Float: ${item.total_float}d`}
+            title={tooltipText}
           >
             {item.widthPercentage > 12 ? (
               <span className="truncate px-1 gantt-duration-text" style={{ color: 'inherit' }}>
@@ -226,9 +221,71 @@ Total Float: ${item.total_float}d`}
             ) : null}
           </div>
         )}
+
+        {/* Baseline bar (ghost) - always visible in report view */}
+        {hasBaseline && !isMilestone && (
+          <div
+            className="absolute rounded"
+            style={{
+              left: `${item.baselineStartPercentage}%`,
+              width: `${item.baselineWidthPercentage}%`,
+              top: bs.barTopOffset,
+              height: bs.barHeight,
+              minWidth: `${bs.barMinWidth}px`,
+              backgroundColor: bs.barBg,
+              borderWidth: '1px',
+              borderStyle: bs.barBorderStyle,
+              borderColor: bs.barBorderColor,
+              opacity: bs.barOpacity,
+            }}
+            title={`Baseline: ${format(parseISO(item.baseline_start!), 'MMM dd, yyyy')} - ${format(parseISO(item.baseline_finish!), 'MMM dd, yyyy')}`}
+          />
+        )}
+
+        {/* Baseline milestone (hollow diamond) */}
+        {item.baselineStartPercentage !== undefined && isMilestone && (
+          <div
+            className="absolute -translate-x-1/2 -translate-y-1/2 rotate-45"
+            style={{
+              left: `${item.baselineStartPercentage}%`,
+              top: bs.milestoneTopOffset,
+              width: `${bs.milestoneSize}px`,
+              height: `${bs.milestoneSize}px`,
+              borderWidth: '1px',
+              borderStyle: bs.barBorderStyle,
+              borderColor: bs.milestoneBorderColor,
+              backgroundColor: bs.milestoneBg,
+            }}
+            title={`Baseline: ${format(parseISO(item.baseline_start!), 'MMM dd, yyyy')}`}
+          />
+        )}
       </div>
     </div>
   );
+}
+
+function buildReportTooltip(item: PositionedItem): string {
+  let tooltip = `${item.s_item}
+Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
+End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
+Working Days: ${item.working_days}d
+Calendar Days: ${item.calendar_days}d
+Total Float: ${item.total_float}d`;
+
+  if (item.baseline_start && item.baseline_finish) {
+    const blStart = format(parseISO(item.baseline_start), 'MMM dd, yyyy');
+    const blFinish = format(parseISO(item.baseline_finish), 'MMM dd, yyyy');
+    const currentFinish = parseISO(item.finish);
+    const baselineFinish = parseISO(item.baseline_finish);
+    const slipDays = differenceInDays(currentFinish, baselineFinish);
+
+    tooltip += `\nBaseline: ${blStart} - ${blFinish}`;
+    if (slipDays !== 0) {
+      tooltip += `\nSlippage: ${slipDays > 0 ? '+' : ''}${slipDays} days`;
+    }
+  }
+
+  return tooltip;
 }
 
 function getBarColor(index: number): string {

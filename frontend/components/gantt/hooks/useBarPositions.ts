@@ -55,11 +55,25 @@ export function useBarPositions({
           const startPercentage = (daysFromStart / totalDays) * 100;
           const widthPercentage = (duration / totalDays) * 100;
 
+          let baselineStartPercentage: number | undefined;
+          let baselineWidthPercentage: number | undefined;
+
+          if (item.baseline_start && item.baseline_finish) {
+            const blStart = parseISO(item.baseline_start);
+            const blFinish = parseISO(item.baseline_finish);
+            const blDaysFromStart = differenceInDays(blStart, timelineStartDate);
+            const blDuration = differenceInDays(blFinish, blStart) + 1;
+            baselineStartPercentage = Math.max(0, (blDaysFromStart / totalDays) * 100);
+            baselineWidthPercentage = Math.max(1, (blDuration / totalDays) * 100);
+          }
+
           return {
             ...item,
             startPercentage: Math.max(0, startPercentage),
             widthPercentage: Math.max(1, widthPercentage),
             duration,
+            baselineStartPercentage,
+            baselineWidthPercentage,
           };
         } catch {
           return null;

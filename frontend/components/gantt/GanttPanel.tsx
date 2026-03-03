@@ -8,7 +8,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { format, isValid, parseISO } from 'date-fns';
+import { format, isValid, parseISO, differenceInDays } from 'date-fns';
 import { X, Calendar, Filter, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
 import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta } from '@/types/schedule';
 import {
@@ -20,6 +20,7 @@ import {
   SortMode,
 } from './hooks';
 import { RelationshipArrows } from './RelationshipArrows';
+import ganttStyleSettings from './ganttStyleSettings';
 
 interface GanttPanelProps {
   data: GanttChartData;
@@ -66,6 +67,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
   const [showLinks, setShowLinks] = useState<boolean>(true);
+  const [showBaseline, setShowBaseline] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [activityColumnWidth, setActivityColumnWidth] = useState<number>(192);
@@ -403,6 +405,21 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
               </button>
             )}
 
+            {data.has_baseline && (
+              <button
+                type="button"
+                onClick={() => setShowBaseline((previous) => !previous)}
+                className={`h-[26px] px-2 rounded-full border flex items-center gap-1 text-xs transition-colors ${
+                  showBaseline
+                    ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
+                    : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
+                }`}
+                title={showBaseline ? 'Hide baseline' : 'Show baseline'}
+              >
+                Baseline
+              </button>
+            )}
+
             {isViewLoading && <span className="text-gray-500">Loading view...</span>}
           </div>
         </div>
@@ -476,6 +493,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                         canCollapse={canCollapse}
                         isCollapsed={isCollapsed}
                         onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
+                        showBaseline={showBaseline && !!data.has_baseline}
                       />
                     </div>
                   );
@@ -509,6 +527,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
       <Legend
         grouping={data.grouping}
         hasRelationships={!!data.relationships && data.relationships.length > 0}
+        hasBaseline={!!data.has_baseline}
+        showBaseline={showBaseline}
       />
     </div>
   );
@@ -590,6 +610,7 @@ interface HierarchicalRowProps {
   canCollapse: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  showBaseline: boolean;
 }
 
 function HierarchicalRow({
@@ -598,11 +619,14 @@ function HierarchicalRow({
   canCollapse,
   isCollapsed,
   onToggleCollapse,
+  showBaseline,
 }: HierarchicalRowProps) {
   const isSummary = item.is_summary === true;
   const isMilestone = !isSummary && (item.working_days === 0 || item.calendar_days === 0);
   const indentLevel = (item.level || 2) - 1;
   const indentPx = indentLevel * 16;
+  const bs = ganttStyleSettings.baseline;
+  const hasBaseline = item.baselineStartPercentage !== undefined && item.baselineWidthPercentage !== undefined;
 
   return (
     <div className={`flex items-center group h-full ${isSummary ? 'bg-dark-700/30' : ''}`}>
@@ -683,6 +707,44 @@ function HierarchicalRow({
             ) : null}
           </div>
         )}
+
+        {/* Baseline bar (ghost) */}
+        {showBaseline && hasBaseline && !isMilestone && (
+          <div
+            className="absolute rounded"
+            style={{
+              left: `${item.baselineStartPercentage}%`,
+              width: `${item.baselineWidthPercentage}%`,
+              top: bs.barTopOffset,
+              height: bs.barHeight,
+              minWidth: `${bs.barMinWidth}px`,
+              backgroundColor: bs.barBg,
+              borderWidth: '1px',
+              borderStyle: bs.barBorderStyle,
+              borderColor: bs.barBorderColor,
+              opacity: bs.barOpacity,
+            }}
+            title={`Baseline: ${format(parseISO(item.baseline_start!), 'MMM dd, yyyy')} - ${format(parseISO(item.baseline_finish!), 'MMM dd, yyyy')}`}
+          />
+        )}
+
+        {/* Baseline milestone (hollow diamond) */}
+        {showBaseline && item.baselineStartPercentage !== undefined && isMilestone && (
+          <div
+            className="absolute -translate-x-1/2 -translate-y-1/2 rotate-45"
+            style={{
+              left: `${item.baselineStartPercentage}%`,
+              top: bs.milestoneTopOffset,
+              width: `${bs.milestoneSize}px`,
+              height: `${bs.milestoneSize}px`,
+              borderWidth: '1px',
+              borderStyle: bs.barBorderStyle,
+              borderColor: bs.milestoneBorderColor,
+              backgroundColor: bs.milestoneBg,
+            }}
+            title={`Baseline: ${format(parseISO(item.baseline_start!), 'MMM dd, yyyy')}`}
+          />
+        )}
       </div>
     </div>
   );
@@ -705,30 +767,51 @@ function getBarClasses(item: PositionedItem): string {
 }
 
 function getBarTooltip(item: PositionedItem, isSummary: boolean): string {
+  let tooltip: string;
+
   if (isSummary) {
-    return `${item.s_item} (Summary)
+    tooltip = `${item.s_item} (Summary)
 ${item.children_count} activities
 Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
 End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
 Calendar Span: ${item.calendar_days}d
 ${item.is_critical ? '(Contains Critical Path)' : ''}`;
-  }
-
-  return `${item.s_item}
+  } else {
+    tooltip = `${item.s_item}
 Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
 End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
 Working Days: ${item.working_days}d
 Calendar Days: ${item.calendar_days}d
 Total Float: ${item.total_float.toFixed(1)} days
 ${item.is_critical ? '(Critical Path)' : ''}`;
+  }
+
+  if (item.baseline_start && item.baseline_finish) {
+    const blStart = format(parseISO(item.baseline_start), 'MMM dd, yyyy');
+    const blFinish = format(parseISO(item.baseline_finish), 'MMM dd, yyyy');
+    const currentFinish = parseISO(item.finish);
+    const baselineFinish = parseISO(item.baseline_finish);
+    const slipDays = differenceInDays(currentFinish, baselineFinish);
+
+    tooltip += `\nBaseline: ${blStart} - ${blFinish}`;
+    if (slipDays !== 0) {
+      tooltip += `\nSlippage: ${slipDays > 0 ? '+' : ''}${slipDays} days`;
+    }
+  }
+
+  return tooltip;
 }
 
 interface LegendProps {
   grouping?: string | null;
   hasRelationships?: boolean;
+  hasBaseline?: boolean;
+  showBaseline?: boolean;
 }
 
-function Legend({ grouping, hasRelationships }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline }: LegendProps) {
+  const bs = ganttStyleSettings.baseline;
+
   return (
     <div className="px-4 py-2 border-t border-dark-700 bg-dark-800/30 text-xs rounded-b-xl">
       <div className="flex items-center gap-4 text-gray-400 flex-wrap">
@@ -770,6 +853,23 @@ function Legend({ grouping, hasRelationships }: LegendProps) {
                 <polygon points="12,3 16,6 12,9" fill="#6B7280" />
               </svg>
               <span>Link</span>
+            </div>
+          </>
+        )}
+        {hasBaseline && showBaseline && (
+          <>
+            <div className="w-px h-3 bg-dark-600 mx-1"></div>
+            <div className="flex items-center gap-1">
+              <div
+                className="w-3 h-3 rounded"
+                style={{
+                  backgroundColor: bs.legendBg,
+                  borderWidth: '1px',
+                  borderStyle: bs.barBorderStyle,
+                  borderColor: bs.legendBorderColor,
+                }}
+              />
+              <span>Baseline</span>
             </div>
           </>
         )}

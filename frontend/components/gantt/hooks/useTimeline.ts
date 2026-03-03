@@ -51,17 +51,28 @@ export function useTimeline({
       const itemStarts = items.map((item) => parseISO(item.start));
       const itemEnds = items.map((item) => parseISO(item.finish));
 
+      // Include baseline dates so the timeline expands to fit them
+      const baselineStarts = items
+        .filter((item) => item.baseline_start)
+        .map((item) => parseISO(item.baseline_start!));
+      const baselineEnds = items
+        .filter((item) => item.baseline_finish)
+        .map((item) => parseISO(item.baseline_finish!));
+
+      const allStarts = [...itemStarts, ...baselineStarts];
+      const allEnds = [...itemEnds, ...baselineEnds];
+
       const dataStart = projectStart
         ? typeof projectStart === 'string'
           ? parseISO(projectStart)
           : projectStart
-        : new Date(Math.min(...itemStarts.map((d) => d.getTime())));
+        : new Date(Math.min(...allStarts.map((d) => d.getTime())));
 
       const dataEnd = projectEnd
         ? typeof projectEnd === 'string'
           ? parseISO(projectEnd)
           : projectEnd
-        : new Date(Math.max(...itemEnds.map((d) => d.getTime())));
+        : new Date(Math.max(...allEnds.map((d) => d.getTime())));
 
       const timelineStart = startOfMonth(dataStart);
       const timelineEnd = addMonths(startOfMonth(dataEnd), 1);
