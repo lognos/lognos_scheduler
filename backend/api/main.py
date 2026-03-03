@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logfire
 
-from backend.api.routers import chat, conversations, p6_schedules, projects
+from backend.api.routers import chat, conversations, p6_schedules, projects, schedule_views
 from backend.config.settings import settings
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
@@ -32,6 +32,7 @@ app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(p6_schedules.router, prefix="/api/v1/p6-schedules", tags=["p6-schedules"])
 app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
+app.include_router(schedule_views.router, prefix="/api/v1/schedule-views", tags=["schedule-views"])
 
 @app.get("/health")
 async def health_check():

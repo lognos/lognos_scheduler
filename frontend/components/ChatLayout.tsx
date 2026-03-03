@@ -9,7 +9,7 @@ import { ChatHeader } from './ChatHeader';
 import { ReviewBadge, ReviewItem } from './ReviewBadge';
 import { GanttPanel } from './gantt';
 import { useUser } from '@/lib/contexts/UserContext';
-import { GanttPanelState } from '@/types/schedule';
+import { GanttPanelState, ScheduleViewKey, ScheduleViewMeta } from '@/types/schedule';
 
 // Mock data for review items - TODO: Replace with usePendingActions hook
 const mockReviewItems: ReviewItem[] = [
@@ -26,6 +26,10 @@ interface ChatLayoutProps {
     onHistoryToggle: () => void;
     ganttPanel?: GanttPanelState;
     onHideGanttPanel?: () => void;
+    scheduleViews?: ScheduleViewMeta[];
+    activeScheduleViewKey?: ScheduleViewKey | null;
+    onSelectScheduleView?: (viewKey: ScheduleViewKey) => void;
+    isPreloadingSchedule?: boolean;
 }
 
 
@@ -38,6 +42,10 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
     onHistoryToggle,
     ganttPanel,
     onHideGanttPanel,
+    scheduleViews,
+    activeScheduleViewKey,
+    onSelectScheduleView,
+    isPreloadingSchedule,
 }) => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const { user, t } = useUser();
@@ -135,6 +143,10 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
                     onClose={onHideGanttPanel}
                     width={ganttWidth}
                     onWidthChange={handleGanttWidthChange}
+                    availableViews={scheduleViews || []}
+                    activeViewKey={activeScheduleViewKey || undefined}
+                    onSelectView={onSelectScheduleView}
+                    isViewLoading={isPreloadingSchedule}
                 />
             )}
         </div>

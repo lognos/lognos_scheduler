@@ -17,9 +17,16 @@ class MSScheduleRepository:
     
     Handles all CRUD operations for schedule_versions, schedule_activities,
     schedule_links, project_calendars, calendar_exceptions, and project_constraints.
+    
+    All tables live in the lognos_schedule schema.
     """
     
     supabase: Client
+    SCHEMA: str = "lognos_schedule"
+    
+    def _table(self, name: str):
+        """Return a PostgREST query builder scoped to lognos_schedule."""
+        return self.supabase.schema(self.SCHEMA).table(name)
     
     # =========================================================================
     # Version Operations
@@ -40,7 +47,7 @@ class MSScheduleRepository:
         Returns:
             List of version records ordered by version_number desc
         """
-        query = self.supabase.table('schedule_versions') \
+        query = self._table('schedule_versions') \
             .select('*') \
             .eq('project_name', project_name) \
             .order('version_number', desc=True)
@@ -51,7 +58,7 @@ class MSScheduleRepository:
     async def get_version(self, version_id: int) -> Optional[dict]:
         """Get version by ID."""
         try:
-            result = self.supabase.table('schedule_versions') \
+            result = self._table('schedule_versions') \
                 .select('*') \
                 .eq('id', version_id) \
                 .single() \
@@ -64,7 +71,7 @@ class MSScheduleRepository:
     async def get_current_version(self, project_name: str) -> Optional[dict]:
         """Get the current active version for a project."""
         try:
-            result = self.supabase.table('schedule_versions') \
+            result = self._table('schedule_versions') \
                 .select('*') \
                 .eq('project_name', project_name) \
                 .eq('is_current', True) \
@@ -102,7 +109,7 @@ class MSScheduleRepository:
         start_date = reference_date - timedelta(weeks=weeks_back)
         end_date = reference_date + timedelta(weeks=weeks_forward)
         
-        query = self.supabase.table('schedule_activities') \
+        query = self._table('schedule_activities') \
             .select('*') \
             .eq('schedule_version_id', version_id) \
             .gte('finish', start_date.isoformat()) \
@@ -140,7 +147,7 @@ class MSScheduleRepository:
         Returns:
             List of activity records
         """
-        query = self.supabase.table('schedule_activities') \
+        query = self._table('schedule_activities') \
             .select('*') \
             .eq('schedule_version_id', version_id)
         
@@ -165,7 +172,7 @@ class MSScheduleRepository:
     async def get_activity_by_id(self, activity_id: int) -> Optional[dict]:
         """Get a single activity by internal ID."""
         try:
-            result = self.supabase.table('schedule_activities') \
+            result = self._table('schedule_activities') \
                 .select('*') \
                 .eq('id', activity_id) \
                 .single() \
@@ -182,7 +189,7 @@ class MSScheduleRepository:
     ) -> Optional[dict]:
         """Get a single activity by MS Project UID within a version."""
         try:
-            result = self.supabase.table('schedule_activities') \
+            result = self._table('schedule_activities') \
                 .select('*') \
                 .eq('schedule_version_id', version_id) \
                 .eq('ms_uid', ms_uid) \
@@ -202,7 +209,7 @@ class MSScheduleRepository:
         version_id: int
     ) -> list[dict]:
         """Get all relationships for a version with predecessor/successor details."""
-        return self.supabase.table('schedule_links') \
+        return self._table('schedule_links') \
             .select('*, pred:schedule_activities!pred_id(name, ms_uid, wbs), succ:schedule_activities!succ_id(name, ms_uid, wbs)') \
             .eq('schedule_version_id', version_id) \
             .execute().data or []
@@ -213,12 +220,12 @@ class MSScheduleRepository:
         activity_id: int
     ) -> dict:
         """Get predecessors and successors for a specific activity."""
-        preds = self.supabase.table('schedule_links') \
+        preds = self._table('schedule_links') \
             .select('*, pred:schedule_activities!pred_id(name, ms_uid, wbs)') \
             .eq('succ_id', activity_id) \
             .execute().data or []
         
-        succs = self.supabase.table('schedule_links') \
+        succs = self._table('schedule_links') \
             .select('*, succ:schedule_activities!succ_id(name, ms_uid, wbs)') \
             .eq('pred_id', activity_id) \
             .execute().data or []
@@ -235,7 +242,7 @@ class MSScheduleRepository:
     @logfire.instrument("ms_repo.get_calendar")
     async def get_calendar(self, version_id: int) -> dict:
         """Get calendar info including exceptions for a version."""
-        calendar = self.supabase.table('project_calendars') \
+        calendar = self._table('project_calendars') \
             .select('*') \
             .eq('schedule_version_id', version_id) \
             .execute().data
@@ -244,7 +251,7 @@ class MSScheduleRepository:
             return {'calendar': None, 'exceptions': []}
         
         cal = calendar[0]
-        exceptions = self.supabase.table('calendar_exceptions') \
+        exceptions = self._table('calendar_exceptions') \
             .select('*') \
             .eq('calendar_id', cal['id']) \
             .order('exception_date') \
@@ -255,7 +262,7 @@ class MSScheduleRepository:
     @logfire.instrument("ms_repo.get_project_constraints")
     async def get_project_constraints(self, version_id: int) -> Optional[dict]:
         """Get project constraints for a version (dates, status date, direction)."""
-        result = self.supabase.table('project_constraints') \
+        result = self._table('project_constraints') \
             .select('*') \
             .eq('schedule_version_id', version_id) \
             .execute().data
@@ -270,7 +277,7 @@ class MSScheduleRepository:
     @logfire.instrument("ms_repo.get_constraint_types")
     async def get_constraint_types(self) -> list[dict]:
         """Get all constraint type definitions."""
-        return self.supabase.table('constraint_types') \
+        return self._table('constraint_types') \
             .select('*') \
             .order('id') \
             .execute().data or []
@@ -301,7 +308,7 @@ class MSScheduleRepository:
             New version ID
         """
         # Get base version metadata
-        base = self.supabase.table('schedule_versions') \
+        base = self._table('schedule_versions') \
             .select('project_name, version_number') \
             .eq('id', base_version_id) \
             .single().execute().data
@@ -315,7 +322,7 @@ class MSScheduleRepository:
         new_version_number = int(now.strftime('%y%m%d%H%M'))
         
         # Create new version record
-        new_version = self.supabase.table('schedule_versions').insert({
+        new_version = self._table('schedule_versions').insert({
             'project_name': base['project_name'],
             'version_name': version_name,
             'version_number': new_version_number,
@@ -366,10 +373,10 @@ class MSScheduleRepository:
         
         # Batch insert activities
         if activities_records:
-            self.supabase.table('schedule_activities').insert(activities_records).execute()
+            self._table('schedule_activities').insert(activities_records).execute()
         
         # Get inserted activity IDs for relationship mapping
-        inserted = self.supabase.table('schedule_activities') \
+        inserted = self._table('schedule_activities') \
             .select('id, ms_uid') \
             .eq('schedule_version_id', new_version_id) \
             .execute().data or []
@@ -402,7 +409,7 @@ class MSScheduleRepository:
                 })
         
         if rel_records:
-            self.supabase.table('schedule_links').insert(rel_records).execute()
+            self._table('schedule_links').insert(rel_records).execute()
         
         logfire.info(
             "Created subversion",
@@ -433,7 +440,7 @@ class MSScheduleRepository:
             ValueError: If optimistic lock fails (current changed)
         """
         # Get version info
-        version = self.supabase.table('schedule_versions') \
+        version = self._table('schedule_versions') \
             .select('project_name') \
             .eq('id', version_id) \
             .single().execute().data
@@ -441,7 +448,7 @@ class MSScheduleRepository:
         project_name = version['project_name']
         
         # Check optimistic lock
-        current = self.supabase.table('schedule_versions') \
+        current = self._table('schedule_versions') \
             .select('id') \
             .eq('project_name', project_name) \
             .eq('is_current', True) \
@@ -463,13 +470,13 @@ class MSScheduleRepository:
             diff = await self._generate_version_diff(old_current_id, version_id)
         
         # Unset all current flags for this project
-        self.supabase.table('schedule_versions') \
+        self._table('schedule_versions') \
             .update({'is_current': False}) \
             .eq('project_name', project_name) \
             .execute()
         
         # Set new current
-        self.supabase.table('schedule_versions') \
+        self._table('schedule_versions') \
             .update({'is_current': True}) \
             .eq('id', version_id) \
             .execute()
@@ -493,13 +500,13 @@ class MSScheduleRepository:
         new_version_id: int
     ) -> dict:
         """Generate diff summary between two versions."""
-        old_activities = self.supabase.table('schedule_activities') \
+        old_activities = self._table('schedule_activities') \
             .select('ms_uid, name, start, finish, duration_d, percent_complete') \
             .eq('schedule_version_id', old_version_id) \
             .eq('is_summary', False) \
             .execute().data or []
         
-        new_activities = self.supabase.table('schedule_activities') \
+        new_activities = self._table('schedule_activities') \
             .select('ms_uid, name, start, finish, duration_d, percent_complete') \
             .eq('schedule_version_id', new_version_id) \
             .eq('is_summary', False) \

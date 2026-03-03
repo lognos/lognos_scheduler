@@ -4,9 +4,9 @@ NetworkX-based CPM (Critical Path Method) calculator for P6 schedules.
 This module provides schedule calculation functionality using NetworkX DiGraph
 for dependency network representation and CPM algorithm implementation.
 
-MVP Scope:
-- Finish-to-Start (FS) relationships only
-- Simplified 8h/day, 5 days/week calendar
+Current Scope:
+- All standard relationship types (FS/SS/FF/SF)
+- Simplified 8h/day, 5 days/week calendar with exception dates
 - "Start On or After" (MSOA/SNET) constraint support
 """
 
@@ -96,7 +96,8 @@ class NetworkCalculator:
         activities_df: pd.DataFrame,
         relationships_df: pd.DataFrame,
         hours_per_day: float = DEFAULT_HOURS_PER_DAY,
-        project_start_date: Optional[date] = None
+        project_start_date: Optional[date] = None,
+        calendar_exceptions: Optional[list[date]] = None,
     ):
         """
         Initialize the calculator.
@@ -126,6 +127,7 @@ class NetworkCalculator:
         self.relationships_df = relationships_df.copy()
         self.hours_per_day = hours_per_day
         self.project_start = project_start_date or date.today()
+        self.calendar_exceptions = set(calendar_exceptions or [])
         
         self.graph: Optional[nx.DiGraph] = None
         self._warnings: list[str] = []
@@ -135,30 +137,51 @@ class NetworkCalculator:
         if hours is None or (isinstance(hours, float) and pd.isna(hours)):
             return 0.0
         return hours / self.hours_per_day
+
+    def _normalize_days(self, work_days: float) -> int:
+        """Normalize work-day values to integer steps for date arithmetic."""
+        if work_days is None or (isinstance(work_days, float) and pd.isna(work_days)):
+            return 0
+        if work_days >= 0:
+            return int(work_days)
+        return -int(abs(work_days))
+
+    def _coerce_date(self, value: object) -> Optional[date]:
+        """Convert incoming value to date if possible."""
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, date):
+            return value
+        parsed = pd.to_datetime(value, errors='coerce')
+        if pd.isna(parsed):
+            return None
+        return parsed.date()
+
+    def _is_work_day(self, value: date) -> bool:
+        """Return True if date is a work day according to weekday + exceptions."""
+        return value.weekday() < 5 and value not in self.calendar_exceptions
     
     def _days_to_work_date(self, start_date: date, work_days: float) -> date:
         """
-        Add work days to a date, skipping weekends.
-        
-        MVP: Simple weekend skip. Future: Full calendar support.
+        Add/subtract work days to a date, skipping weekends and exception dates.
         """
-        if work_days <= 0:
+        normalized_days = self._normalize_days(work_days)
+        if normalized_days == 0:
             return start_date
-            
+
+        step = 1 if normalized_days > 0 else -1
         result = start_date
-        days_added = 0
-        full_days = int(work_days)
-        
-        while days_added < full_days:
-            result += timedelta(days=1)
-            # Skip weekends (Saturday=5, Sunday=6)
-            if result.weekday() < 5:
-                days_added += 1
-                
+        days_remaining = abs(normalized_days)
+
+        while days_remaining > 0:
+            result += timedelta(days=step)
+            if self._is_work_day(result):
+                days_remaining -= 1
+
         return result
     
     def _work_days_between(self, start_date: date, end_date: date) -> float:
-        """Calculate work days between two dates (excluding weekends)."""
+        """Calculate work days between two dates (excluding weekends and exceptions)."""
         if end_date <= start_date:
             return 0.0
             
@@ -166,7 +189,7 @@ class NetworkCalculator:
         current = start_date
         while current < end_date:
             current += timedelta(days=1)
-            if current.weekday() < 5:
+            if self._is_work_day(current):
                 work_days += 1
                 
         return float(work_days)
@@ -209,13 +232,16 @@ class NetworkCalculator:
                 free_float=None,
             )
         
-        # Add relationship edges (MVP: FS only, others logged as warnings)
+        # Add relationship edges
         for _, row in self.relationships_df.iterrows():
             pred_id = row['pred_task_id']
             succ_id = row['task_id']
             pred_type = row.get('pred_type', 'PR_FS')
             lag_hours = row.get('lag_hr_cnt', 0)
             lag_days = self._hours_to_days(lag_hours)
+
+            if pred_type and not str(pred_type).startswith('PR_'):
+                pred_type = f"PR_{pred_type}"
             
             # Validate nodes exist
             if pred_id not in self.graph.nodes:
@@ -224,12 +250,6 @@ class NetworkCalculator:
             if succ_id not in self.graph.nodes:
                 self._warnings.append(f"Successor {succ_id} not found for relationship from {pred_id}")
                 continue
-            
-            # MVP: Only FS relationships
-            if pred_type != 'PR_FS':
-                self._warnings.append(
-                    f"Non-FS relationship {pred_type} from {pred_id} to {succ_id} - treating as FS"
-                )
             
             self.graph.add_edge(
                 pred_id,
@@ -300,7 +320,7 @@ class NetworkCalculator:
         Algorithm:
         1. Topologically sort activities
         2. For each activity:
-           - ES = max(ES of all predecessors' EF + lag, project_start)
+           - ES = max(predecessor-derived starts, project_start)
            - EF = ES + duration
         3. Apply constraints (Start On or After)
         """
@@ -324,27 +344,40 @@ class NetworkCalculator:
                 # No predecessors - start at project start
                 early_start = self.project_start
             else:
-                # ES = max(all predecessor EF + lag)
+                # ES = max(all predecessor constraints)
                 candidate_starts = []
                 for pred_id in predecessors:
                     pred_node = self.graph.nodes[pred_id]
                     pred_ef = pred_node['early_finish']
+                    pred_es = pred_node['early_start']
                     edge_data = self.graph.edges[pred_id, node_id]
                     lag = edge_data.get('lag', 0)
-                    
-                    # FS: Successor starts after predecessor finishes + lag
-                    candidate_start = self._days_to_work_date(pred_ef, lag)
+                    rel_type = edge_data.get('pred_type', 'PR_FS')
+
+                    if rel_type == 'PR_SS':
+                        # ES(succ) >= ES(pred) + lag
+                        candidate_start = self._days_to_work_date(pred_es, lag)
+                    elif rel_type == 'PR_FF':
+                        # EF(succ) >= EF(pred) + lag => ES(succ) >= EF(pred)+lag-duration
+                        required_finish = self._days_to_work_date(pred_ef, lag)
+                        candidate_start = self._days_to_work_date(required_finish, -duration)
+                    elif rel_type == 'PR_SF':
+                        # EF(succ) >= ES(pred) + lag => ES(succ) >= ES(pred)+lag-duration
+                        required_finish = self._days_to_work_date(pred_es, lag)
+                        candidate_start = self._days_to_work_date(required_finish, -duration)
+                    else:
+                        # FS: ES(succ) >= EF(pred) + lag
+                        candidate_start = self._days_to_work_date(pred_ef, lag)
+
                     candidate_starts.append(candidate_start)
                 
                 early_start = max(candidate_starts)
             
             # Apply "Start On or After" constraint
             constraint_type = node.get('constraint_type')
-            constraint_date = node.get('constraint_date')
+            constraint_date = self._coerce_date(node.get('constraint_date'))
             
             if constraint_type in ('CS_MSOA', 'CS_SNET') and constraint_date:
-                if isinstance(constraint_date, str):
-                    constraint_date = date.fromisoformat(constraint_date)
                 if constraint_date > early_start:
                     early_start = constraint_date
             
@@ -363,7 +396,7 @@ class NetworkCalculator:
         Algorithm:
         1. Reverse topological order
         2. For each activity:
-           - LF = min(LS of all successors - lag, project_finish)
+           - LF = min(successor-derived finishes, project_finish)
            - LS = LF - duration
         """
         if self.graph is None:
@@ -390,40 +423,38 @@ class NetworkCalculator:
                 # No successors - finish at project finish
                 late_finish = project_finish
             else:
-                # LF = min(all successor LS - lag)
+                # LF = min(all successor constraints)
                 candidate_finishes = []
                 for succ_id in successors:
                     succ_node = self.graph.nodes[succ_id]
                     succ_ls = succ_node['late_start']
+                    succ_lf = succ_node['late_finish']
                     edge_data = self.graph.edges[node_id, succ_id]
                     lag = edge_data.get('lag', 0)
-                    
-                    # FS: Predecessor must finish before successor starts - lag
-                    # Work backwards from successor LS
-                    work_days = self._work_days_between(node['early_finish'], succ_ls) - lag
-                    candidate_finish = self._days_to_work_date(node['early_finish'], work_days)
-                    
-                    # Simpler: LF = LS of successor - lag (in work days)
-                    # We need to subtract lag work days from successor LS
-                    if lag > 0:
-                        # Positive lag: we can finish earlier
-                        pass
-                    candidate_finishes.append(succ_ls)  # Simplified for FS
+                    rel_type = edge_data.get('pred_type', 'PR_FS')
+
+                    if rel_type == 'PR_SS':
+                        # LS(pred) <= LS(succ) - lag => LF(pred) <= LS(succ)-lag+dur(pred)
+                        latest_start = self._days_to_work_date(succ_ls, -lag)
+                        candidate_finish = self._days_to_work_date(latest_start, duration)
+                    elif rel_type == 'PR_FF':
+                        # LF(pred) <= LF(succ) - lag
+                        candidate_finish = self._days_to_work_date(succ_lf, -lag)
+                    elif rel_type == 'PR_SF':
+                        # LS(pred) <= LF(succ) - lag => LF(pred) <= LF(succ)-lag+dur(pred)
+                        latest_start = self._days_to_work_date(succ_lf, -lag)
+                        candidate_finish = self._days_to_work_date(latest_start, duration)
+                    else:
+                        # FS: LF(pred) <= LS(succ) - lag
+                        candidate_finish = self._days_to_work_date(succ_ls, -lag)
+
+                    candidate_finishes.append(candidate_finish)
                 
                 late_finish = min(candidate_finishes)
             
             # Calculate late start (work backwards from late finish)
             # LS = LF - duration
-            work_days_back = duration
-            current = late_finish
-            days_subtracted = 0
-            
-            while days_subtracted < work_days_back and current > self.project_start:
-                current -= timedelta(days=1)
-                if current.weekday() < 5:
-                    days_subtracted += 1
-            
-            late_start = current
+            late_start = self._days_to_work_date(late_finish, -duration)
             
             # Store results
             node['late_start'] = late_start
@@ -479,6 +510,100 @@ class NetworkCalculator:
         ]
         
         return critical_ids
+
+    @logfire.instrument("network_calculator.validate_against_ms_dates")
+    def validate_against_ms_dates(self, tolerance_days: int = 1) -> dict:
+        """
+        Compare calculated dates against stored MS dates (ground truth).
+
+        Returns:
+            Summary with total/matched counts and discrepancy list.
+        """
+        if self.graph is None:
+            raise ValueError("Network not built")
+
+        if self.activities_df.empty or 'task_id' not in self.activities_df.columns:
+            return {
+                'total_compared': 0,
+                'matched': 0,
+                'match_rate': 0.0,
+                'discrepancies': [],
+            }
+
+        df = self.activities_df.copy()
+        if 'original_start' not in df.columns:
+            if 'target_start_date' in df.columns:
+                df['original_start'] = df['target_start_date']
+            else:
+                df['original_start'] = None
+
+        if 'original_finish' not in df.columns:
+            if 'target_end_date' in df.columns:
+                df['original_finish'] = df['target_end_date']
+            else:
+                df['original_finish'] = None
+
+        lookup = df.set_index('task_id')
+        discrepancies: list[dict] = []
+        matched = 0
+        total = 0
+
+        for node_id, attrs in self.graph.nodes(data=True):
+            if node_id not in lookup.index:
+                continue
+
+            row = lookup.loc[node_id]
+            expected_start = self._coerce_date(row.get('original_start'))
+            expected_finish = self._coerce_date(row.get('original_finish'))
+            calc_start = self._coerce_date(attrs.get('early_start'))
+            calc_finish = self._coerce_date(attrs.get('early_finish'))
+
+            if expected_start is None and expected_finish is None:
+                continue
+
+            start_delta = abs((calc_start - expected_start).days) if calc_start and expected_start else None
+            finish_delta = abs((calc_finish - expected_finish).days) if calc_finish and expected_finish else None
+
+            start_ok = start_delta is None or start_delta <= tolerance_days
+            finish_ok = finish_delta is None or finish_delta <= tolerance_days
+            is_match = bool(start_ok and finish_ok)
+
+            total += 1
+            if is_match:
+                matched += 1
+            else:
+                discrepancies.append({
+                    'task_id': int(node_id),
+                    'task_code': str(attrs.get('task_code', '')),
+                    'task_name': str(attrs.get('task_name', '')),
+                    'start_delta_days': start_delta,
+                    'finish_delta_days': finish_delta,
+                    'expected_start': expected_start.isoformat() if expected_start else None,
+                    'expected_finish': expected_finish.isoformat() if expected_finish else None,
+                    'calculated_start': calc_start.isoformat() if calc_start else None,
+                    'calculated_finish': calc_finish.isoformat() if calc_finish else None,
+                })
+
+            logfire.info(
+                "MS date comparison",
+                task_id=int(node_id),
+                task_code=str(attrs.get('task_code', '')),
+                match=is_match,
+                start_delta_days=start_delta,
+                finish_delta_days=finish_delta,
+                expected_start=expected_start.isoformat() if expected_start else None,
+                expected_finish=expected_finish.isoformat() if expected_finish else None,
+                calculated_start=calc_start.isoformat() if calc_start else None,
+                calculated_finish=calc_finish.isoformat() if calc_finish else None,
+            )
+
+        match_rate = (matched / total) if total else 0.0
+        return {
+            'total_compared': total,
+            'matched': matched,
+            'match_rate': match_rate,
+            'discrepancies': discrepancies,
+        }
     
     @logfire.instrument("network_calculator.calculate")
     def calculate(self) -> CalculationResult:

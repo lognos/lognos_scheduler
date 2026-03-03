@@ -30,6 +30,10 @@ export function ChatWithHistory() {
         conversationMetadata,
         ganttPanel,
         hideGanttPanel,
+        scheduleViews,
+        activeScheduleViewKey,
+        switchScheduleView,
+        isPreloadingSchedule,
     } = useAGUIStream();
 
     // Debounce panel toggle to prevent rapid fetches
@@ -63,9 +67,16 @@ export function ChatWithHistory() {
             }
 
             const data = await response.json();
-            const messages: Message[] = data.messages.map((msg: any) => ({
+            type ConversationApiMessage = {
+                message_id: string;
+                role: string;
+                content: string;
+                timestamp: string;
+            };
+
+            const messages: Message[] = (data.messages as ConversationApiMessage[]).map((msg) => ({
                 id: msg.message_id,
-                role: msg.role,
+                role: msg.role === 'user' ? 'user' : 'assistant',
                 content: msg.content,
                 timestamp: new Date(msg.timestamp).getTime(),
             }));
@@ -100,6 +111,10 @@ export function ChatWithHistory() {
                 onHistoryToggle={handleHistoryToggle}
                 ganttPanel={ganttPanel}
                 onHideGanttPanel={hideGanttPanel}
+                scheduleViews={scheduleViews}
+                activeScheduleViewKey={activeScheduleViewKey}
+                onSelectScheduleView={switchScheduleView}
+                isPreloadingSchedule={isPreloadingSchedule}
             />
 
             {showHistory && (

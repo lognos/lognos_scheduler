@@ -142,3 +142,31 @@ export interface GanttPanelState {
   /** Loading state */
   isLoading: boolean;
 }
+
+export type PredefinedScheduleViewKey = 'critical_path' | 'lookahead_4w' | 'full_schedule';
+export type ScheduleViewKey = PredefinedScheduleViewKey | 'custom';
+
+export interface ScheduleViewMeta {
+  view_key: ScheduleViewKey;
+  view_name: string;
+  view_type: string;
+  is_default: boolean;
+  computed_at?: string | null;
+}
+
+export interface ScheduleViewsPreloadResponse {
+  project_id: string;
+  schedule_version_id: number;
+  default_view_key: PredefinedScheduleViewKey;
+  views: ScheduleViewMeta[];
+  payload: GanttChartData;
+}
+
+export interface ScheduleViewResponse {
+  project_id: string;
+  schedule_version_id: number;
+  view_key: PredefinedScheduleViewKey;
+  view_name: string;
+  computed_at?: string | null;
+  payload: GanttChartData;
+}

@@ -57,6 +57,10 @@ async def load_schedule_ms(
         
         # Load calendar info
         calendar_info = await ctx.deps.ms_repository.get_calendar(version['id'])
+
+        # Load project-level constraints and constraint reference types
+        project_constraints = await ctx.deps.ms_repository.get_project_constraints(version['id'])
+        constraint_types = await ctx.deps.ms_repository.get_constraint_types()
         
         # Load into workspace (stores in schedule_state_manager)
         schedule_state_manager.load_from_ms(
@@ -65,7 +69,9 @@ async def load_schedule_ms(
             version_id=version['id'],
             activities=activities,
             relationships=relationships,
-            calendar_info=calendar_info
+            calendar_info=calendar_info,
+            project_constraints=project_constraints,
+            constraint_types=constraint_types,
         )
         
         # Build response

@@ -1005,6 +1005,17 @@ async def calculate_and_display_gantt_tool(
         # Filter relationships to only include those where both activities are in filtered view
         filtered_task_ids = set(filtered_df['task_id'].tolist())
         gantt_relationships = []
+
+        # Timeline bounds should follow visible (filtered) activities
+        visible_start = result.project_start
+        visible_finish = result.project_finish
+        if not filtered_df.empty:
+            visible_starts = filtered_df['early_start'].dropna()
+            visible_finishes = filtered_df['early_finish'].dropna()
+            if not visible_starts.empty:
+                visible_start = visible_starts.min()
+            if not visible_finishes.empty:
+                visible_finish = visible_finishes.max()
         
         if not workspace.relationships_df.empty:
             # Get task_code mapping for the filtered activities
@@ -1063,8 +1074,8 @@ async def calculate_and_display_gantt_tool(
             'data': {
                 'items': gantt_items,
                 'relationships': gantt_relationships,
-                'project_start': result.project_start.isoformat(),
-                'project_finish': result.project_finish.isoformat(),
+                'project_start': visible_start.isoformat(),
+                'project_finish': visible_finish.isoformat(),
                 'critical_path_length': result.critical_path_length_days,
                 'filter_applied': {
                     'wbs_path': filter_wbs,

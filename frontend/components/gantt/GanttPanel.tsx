@@ -8,9 +8,9 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { format, parseISO } from 'date-fns';
-import { X, Calendar, Filter, AlertTriangle, GitBranch } from 'lucide-react';
-import { GanttChartData, GanttFilter } from '@/types/schedule';
+import { format, isValid, parseISO } from 'date-fns';
+import { X, Calendar, Filter, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
+import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta } from '@/types/schedule';
 import {
   useTimeline,
   useBarPositions,
@@ -26,6 +26,10 @@ interface GanttPanelProps {
   onClose: () => void;
   width: number;
   onWidthChange: (width: number) => void;
+  availableViews?: ScheduleViewMeta[];
+  activeViewKey?: ScheduleViewKey;
+  onSelectView?: (viewKey: ScheduleViewKey) => void;
+  isViewLoading?: boolean;
 }
 
 /**
@@ -33,14 +37,39 @@ interface GanttPanelProps {
  * streamed from the scheduling agent via AG-UI.
  */
 
-type RelationshipMode = 'none' | 'critical' | 'all';
+function getSummaryKey(item: PositionedItem): string {
+  return `${item.s_item_id}:${item.id}`;
+}
 
-export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, onWidthChange }) => {
+function formatProjectDate(value?: string): string {
+  if (!value) {
+    return '—';
+  }
+
+  const parsed = parseISO(value);
+  if (!isValid(parsed)) {
+    return '—';
+  }
+
+  return format(parsed, 'MMM d, yyyy');
+}
+
+export const GanttPanel: React.FC<GanttPanelProps> = ({
+  data,
+  onClose,
+  width,
+  onWidthChange,
+  availableViews = [],
+  activeViewKey,
+  onSelectView,
+  isViewLoading = false,
+}) => {
   const parentRef = useRef<HTMLDivElement>(null);
-  const [relationshipMode, setRelationshipMode] = useState<RelationshipMode>('critical');
+  const [showLinks, setShowLinks] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [activityColumnWidth, setActivityColumnWidth] = useState<number>(192);
+  const [collapsedSummaryKeys, setCollapsedSummaryKeys] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
@@ -102,17 +131,6 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
     document.body.style.cursor = 'col-resize';
   };
 
-  // Cycle through modes: critical → all → none → critical
-  const cycleRelationshipMode = () => {
-    setRelationshipMode((prev) => {
-      switch (prev) {
-        case 'critical': return 'all';
-        case 'all': return 'none';
-        case 'none': return 'critical';
-      }
-    });
-  };
-
   // Use shared hooks
   const timeline = useTimeline({
     items: data.items,
@@ -134,12 +152,130 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
     sortMode,
   });
 
+  const collapsibleSummaryKeys = useMemo(() => {
+    const keys = new Set<string>();
+
+    for (let index = 0; index < positionedItems.length; index += 1) {
+      const current = positionedItems[index];
+      if (!current.is_summary) {
+        continue;
+      }
+
+      const currentLevel = current.level ?? 1;
+      const next = positionedItems[index + 1];
+      if (next && (next.level ?? 2) > currentLevel) {
+        keys.add(getSummaryKey(current));
+      }
+    }
+
+    return keys;
+  }, [positionedItems]);
+
+  useEffect(() => {
+    setCollapsedSummaryKeys((previous) => {
+      const next = new Set([...previous].filter((key) => collapsibleSummaryKeys.has(key)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [collapsibleSummaryKeys]);
+
+  const toggleSummaryCollapse = (summaryKey: string) => {
+    setCollapsedSummaryKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(summaryKey)) {
+        next.delete(summaryKey);
+      } else {
+        next.add(summaryKey);
+      }
+      return next;
+    });
+  };
+
+  const collapseAllSummaries = () => {
+    setCollapsedSummaryKeys(new Set(collapsibleSummaryKeys));
+  };
+
+  const collapseLevel2Summaries = () => {
+    const level2Keys = new Set<string>();
+
+    for (const item of positionedItems) {
+      if (!item.is_summary) {
+        continue;
+      }
+
+      const level = item.level ?? 1;
+      if (level === 2 && collapsibleSummaryKeys.has(getSummaryKey(item))) {
+        level2Keys.add(getSummaryKey(item));
+      }
+    }
+
+    setCollapsedSummaryKeys(level2Keys);
+  };
+
+  const expandAllSummaries = () => {
+    setCollapsedSummaryKeys(new Set());
+  };
+
+  const hasCollapsibleSummaries = collapsibleSummaryKeys.size > 0;
+  const hasCollapsedSummaries = collapsedSummaryKeys.size > 0;
+  const activeView = activeViewKey
+    ? availableViews.find((view) => view.view_key === activeViewKey)
+    : null;
+  const hasLevel2CollapsibleSummaries = useMemo(
+    () => positionedItems.some(
+      (item) => item.is_summary && (item.level ?? 1) === 2 && collapsibleSummaryKeys.has(getSummaryKey(item))
+    ),
+    [positionedItems, collapsibleSummaryKeys]
+  );
+
+  const visibleItems = useMemo(() => {
+    const items: PositionedItem[] = [];
+    const collapsedLevels: number[] = [];
+
+    for (const item of positionedItems) {
+      const level = item.level ?? (item.is_summary ? 1 : 2);
+
+      while (collapsedLevels.length > 0 && level <= collapsedLevels[collapsedLevels.length - 1]) {
+        collapsedLevels.pop();
+      }
+
+      const isHiddenByParent = collapsedLevels.length > 0;
+      if (!isHiddenByParent) {
+        items.push(item);
+      }
+
+      if (item.is_summary && collapsedSummaryKeys.has(getSummaryKey(item))) {
+        collapsedLevels.push(level);
+      }
+    }
+
+    return items;
+  }, [positionedItems, collapsedSummaryKeys]);
+
+  const headerMetaItems = useMemo(
+    () => [
+      { label: 'Start', value: formatProjectDate(data.project_start) },
+      { label: 'Finish', value: formatProjectDate(data.project_finish) },
+      { label: 'Critical Path', value: `${data.critical_path_length.toFixed(1)} days` },
+      { label: 'Visible', value: `${visibleItems.length}` },
+      { label: 'Filtered', value: `${data.filtered_activities}` },
+      { label: 'Total', value: `${data.total_activities}` },
+    ],
+    [
+      data.project_start,
+      data.project_finish,
+      data.critical_path_length,
+      data.filtered_activities,
+      data.total_activities,
+      visibleItems.length,
+    ]
+  );
+
   // Build active filter description
   const filterDescription = useFilterDescription(data.filter_applied);
 
   // Virtualization for large datasets
   const rowVirtualizer = useVirtualizer({
-    count: positionedItems.length,
+    count: visibleItems.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 36, // row height in px
     overscan: 10, // render 10 extra rows above/below viewport for smooth scrolling
@@ -157,14 +293,12 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
       />
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-800/50 rounded-t-xl">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-4">
           <Calendar className="h-5 w-5 text-blue-400" />
           <h2 className="text-lg font-light text-white">Schedule</h2>
+          <HeaderMeta items={headerMetaItems} />
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-400">
-            {data.filtered_activities} of {data.total_activities} activities
-          </span>
+        <div className="flex items-center gap-2">
           <button
             onClick={onClose}
             className="p-1 hover:bg-dark-700 rounded transition-colors"
@@ -175,39 +309,104 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
         </div>
       </div>
 
-      {/* Stats bar */}
-      <div className="px-4 py-2 bg-dark-800/30 border-b border-dark-700 text-xs text-gray-400 flex items-center justify-between">
-        <div className="flex gap-4">
-          <span>Start: {format(parseISO(data.project_start), 'MMM d, yyyy')}</span>
-          <span>Finish: {format(parseISO(data.project_finish), 'MMM d, yyyy')}</span>
-          <span>Critical Path: {data.critical_path_length.toFixed(1)} days</span>
+      {(availableViews.length > 0 || isViewLoading || hasCollapsibleSummaries) && (
+        <div className="px-4 py-2 bg-dark-800/20 border-b border-dark-700 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {availableViews.length > 0 && (
+              <div className="relative group">
+                <button
+                  type="button"
+                  className={`px-2.5 py-1 rounded-full border transition-colors border-dark-600 text-gray-300 hover:bg-dark-700/60 ${isViewLoading ? 'opacity-70 cursor-not-allowed' : ''}`}
+                  title="View options"
+                  disabled={isViewLoading}
+                >
+                  {activeView ? activeView.view_name : 'View'}
+                </button>
+
+                <div className="absolute left-0 top-full mt-1 min-w-40 rounded-md border border-dark-600 bg-[#111827] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-30">
+                  {availableViews.map((view, index) => {
+                    const isActive = activeViewKey === view.view_key;
+                    return (
+                      <button
+                        key={view.view_key}
+                        type="button"
+                        onClick={() => onSelectView?.(view.view_key)}
+                        disabled={isViewLoading}
+                        className={`w-full text-left px-3 py-2 text-xs transition-colors disabled:text-gray-600 disabled:hover:bg-transparent ${
+                          isActive
+                            ? 'text-blue-300 bg-blue-500/10'
+                            : 'text-gray-200 hover:bg-dark-700/70'
+                        } ${index === 0 ? 'rounded-t-md' : ''} ${index === availableViews.length - 1 ? 'rounded-b-md' : ''}`}
+                      >
+                        {view.view_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {hasCollapsibleSummaries && (
+              <div className="relative group">
+                <button
+                  type="button"
+                  className="px-2.5 py-1 rounded-full border transition-colors border-dark-600 text-gray-300 hover:bg-dark-700/60"
+                  title="Collapse options"
+                >
+                  Collapse
+                </button>
+
+                <div className="absolute right-0 top-full mt-1 w-36 rounded-md border border-dark-600 bg-[#111827] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-30">
+                  <button
+                    type="button"
+                    onClick={collapseAllSummaries}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-dark-700/70 rounded-t-md disabled:text-gray-600 disabled:hover:bg-transparent"
+                    disabled={collapsedSummaryKeys.size === collapsibleSummaryKeys.size}
+                  >
+                    Collapse all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={collapseLevel2Summaries}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-dark-700/70 disabled:text-gray-600 disabled:hover:bg-transparent"
+                    disabled={!hasLevel2CollapsibleSummaries}
+                  >
+                    Level 2
+                  </button>
+                  <button
+                    type="button"
+                    onClick={expandAllSummaries}
+                    className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-dark-700/70 rounded-b-md disabled:text-gray-600 disabled:hover:bg-transparent"
+                    disabled={!hasCollapsedSummaries}
+                  >
+                    Expand all
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {data.relationships && data.relationships.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowLinks((previous) => !previous)}
+                className={`h-[26px] w-[26px] rounded-full border flex items-center justify-center transition-colors ${
+                  showLinks
+                    ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
+                    : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
+                }`}
+                title={showLinks ? 'Hide links' : 'Show links'}
+                aria-label={showLinks ? 'Hide links' : 'Show links'}
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+              </button>
+            )}
+
+            {isViewLoading && <span className="text-gray-500">Loading view...</span>}
+          </div>
         </div>
-        {/* Relationships toggle */}
-        {data.relationships && data.relationships.length > 0 && (
-          <button
-            onClick={cycleRelationshipMode}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
-              relationshipMode === 'all'
-                ? 'bg-blue-600/20 text-blue-300'
-                : relationshipMode === 'critical'
-                  ? 'bg-red-600/20 text-red-300'
-                  : 'hover:bg-dark-700 text-gray-500'
-            }`}
-            title={
-              relationshipMode === 'all' 
-                ? 'Showing all relationships' 
-                : relationshipMode === 'critical'
-                  ? 'Showing critical path only'
-                  : 'Relationships hidden'
-            }
-          >
-            <GitBranch className="h-3 w-3" />
-            <span>
-              {relationshipMode === 'all' ? 'All' : relationshipMode === 'critical' ? 'Critical' : 'None'}
-            </span>
-          </button>
-        )}
-      </div>
+      )}
 
       {/* Filter indicator */}
       {filterDescription && (
@@ -254,7 +453,11 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
               >
                 {/* Activity rows */}
                 {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const item = positionedItems[virtualRow.index];
+                  const item = visibleItems[virtualRow.index];
+                  const summaryKey = getSummaryKey(item);
+                  const canCollapse = item.is_summary === true && collapsibleSummaryKeys.has(summaryKey);
+                  const isCollapsed = canCollapse && collapsedSummaryKeys.has(summaryKey);
+
                   return (
                     <div
                       key={item.id}
@@ -269,15 +472,17 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
                     >
                       <HierarchicalRow
                         item={item}
-                        showGrouping={!!data.grouping}
                         activityColumnWidth={activityColumnWidth}
+                        canCollapse={canCollapse}
+                        isCollapsed={isCollapsed}
+                        onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
                       />
                     </div>
                   );
                 })}
 
                 {/* Relationship arrows overlay - positioned over timeline area only */}
-                {data.relationships && data.relationships.length > 0 && relationshipMode !== 'none' && (
+                {data.relationships && data.relationships.length > 0 && showLinks && (
                   <div 
                     className="absolute top-0 bottom-0"
                     style={{ 
@@ -286,10 +491,10 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose, width, on
                     }}
                   >
                     <RelationshipArrows
-                      items={positionedItems}
+                      items={visibleItems}
                       relationships={data.relationships}
                       rowHeight={36}
-                      showCriticalOnly={relationshipMode === 'critical'}
+                      showCriticalOnly={false}
                       totalHeight={rowVirtualizer.getTotalSize()}
                     />
                   </div>
@@ -315,6 +520,27 @@ interface TimelineHeaderProps {
   months: TimelineMonth[];
   yearGroups: YearGroup[];
   activityColumnWidth: number;
+}
+
+interface HeaderMetaItem {
+  label: string;
+  value: string;
+}
+
+interface HeaderMetaProps {
+  items: HeaderMetaItem[];
+}
+
+function HeaderMeta({ items }: HeaderMetaProps) {
+  return (
+    <div className="flex items-center gap-4 text-xs text-gray-400 flex-wrap">
+      {items.map((item) => (
+        <span key={item.label}>
+          {item.label}: {item.value}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function TimelineHeader({ months, yearGroups, activityColumnWidth }: TimelineHeaderProps) {
@@ -360,12 +586,21 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth }: TimelineHea
 
 interface HierarchicalRowProps {
   item: PositionedItem;
-  showGrouping: boolean;
   activityColumnWidth: number;
+  canCollapse: boolean;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
-function HierarchicalRow({ item, showGrouping, activityColumnWidth }: HierarchicalRowProps) {
+function HierarchicalRow({
+  item,
+  activityColumnWidth,
+  canCollapse,
+  isCollapsed,
+  onToggleCollapse,
+}: HierarchicalRowProps) {
   const isSummary = item.is_summary === true;
+  const isMilestone = !isSummary && (item.working_days === 0 || item.calendar_days === 0);
   const indentLevel = (item.level || 2) - 1;
   const indentPx = indentLevel * 16;
 
@@ -376,6 +611,22 @@ function HierarchicalRow({ item, showGrouping, activityColumnWidth }: Hierarchic
         className="shrink-0 pr-2 flex items-center"
         style={{ width: `${activityColumnWidth}px`, paddingLeft: `${indentPx}px` }}
       >
+        {isSummary ? (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            disabled={!canCollapse}
+            className={`mr-1 h-4 w-4 flex items-center justify-center rounded transition-colors ${
+              canCollapse ? 'text-gray-300 hover:bg-dark-700 hover:text-white' : 'text-gray-600'
+            }`}
+            aria-label={isCollapsed ? 'Expand summary' : 'Collapse summary'}
+            title={isCollapsed ? 'Expand' : 'Collapse'}
+          >
+            {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </button>
+        ) : (
+          <span className="mr-1 h-4 w-4 shrink-0" aria-hidden="true"></span>
+        )}
         {isSummary && (
           <span
             className="text-xs text-yellow-500 mr-1"
@@ -399,26 +650,39 @@ function HierarchicalRow({ item, showGrouping, activityColumnWidth }: Hierarchic
 
       {/* Timeline bar container */}
       <div className="flex-1 relative h-7 rounded bg-dark-800/30">
-        {/* Activity bar */}
-        <div
-          className={`absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg ${getBarClasses(
-            item
-          )}`}
-          style={{
-            left: `${item.startPercentage}%`,
-            width: `${item.widthPercentage}%`,
-            minWidth: '16px',
-          }}
-          title={getBarTooltip(item, isSummary)}
-        >
-          {item.widthPercentage > 12 ? (
-            <span className="truncate px-1 text-white text-[10px]">
-              {isSummary ? `${item.calendar_days}d` : `${item.working_days}d / ${item.calendar_days}d`}
-            </span>
-          ) : item.widthPercentage > 6 ? (
-            <span className="truncate px-1 text-white text-[10px]">{item.calendar_days}d</span>
-          ) : null}
-        </div>
+        {isMilestone ? (
+          <div
+            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rotate-45 transition-all duration-200 group-hover:opacity-80 shadow-lg ${getBarClasses(
+              item
+            )}`}
+            style={{
+              left: `${item.startPercentage}%`,
+              width: '12px',
+              height: '12px',
+            }}
+            title={getBarTooltip(item, isSummary)}
+          />
+        ) : (
+          <div
+            className={`absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg ${getBarClasses(
+              item
+            )}`}
+            style={{
+              left: `${item.startPercentage}%`,
+              width: `${item.widthPercentage}%`,
+              minWidth: '16px',
+            }}
+            title={getBarTooltip(item, isSummary)}
+          >
+            {item.widthPercentage > 12 ? (
+              <span className="truncate px-1 text-white text-[10px]">
+                {isSummary ? `${item.calendar_days}d` : `${item.working_days}d / ${item.calendar_days}d`}
+              </span>
+            ) : item.widthPercentage > 6 ? (
+              <span className="truncate px-1 text-white text-[10px]">{item.calendar_days}d</span>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   );

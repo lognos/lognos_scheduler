@@ -1,7 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useUser } from '@/lib/contexts/UserContext';
 import { useProject } from '@/lib/contexts/ProjectContext';
-import { GanttChartData, GanttPanelState } from '@/types/schedule';
+import {
+    GanttChartData,
+    GanttPanelState,
+    ScheduleViewKey,
+    ScheduleViewMeta,
+    ScheduleViewsPreloadResponse,
+    ScheduleViewResponse,
+} from '@/types/schedule';
 
 export type Message = {
     id: string;
@@ -34,6 +41,13 @@ type SSEEndEvent = { node: 'End'; output: string };
 type SSEErrorEvent = { node: 'Error'; status: 'error'; error: string };
 type SSEGanttPanelEvent = { type: 'gantt_panel'; action: 'show' | 'hide'; data?: GanttChartData };
 type SSEEvent = SSETokenEvent | SSEReasoningEvent | SSENodeEvent | SSEEndEvent | SSEErrorEvent | SSEGanttPanelEvent;
+
+const CUSTOM_VIEW_META: ScheduleViewMeta = {
+    view_key: 'custom',
+    view_name: 'Custom',
+    view_type: 'session',
+    is_default: false,
+};
 
 function isTokenEvent(data: SSEEvent): data is SSETokenEvent {
     return 'type' in data && data.type === 'token';
@@ -69,6 +83,10 @@ export function useAGUIStream() {
         data: null,
         isLoading: false,
     });
+    const [scheduleViews, setScheduleViews] = useState<ScheduleViewMeta[]>([]);
+    const [activeScheduleViewKey, setActiveScheduleViewKey] = useState<ScheduleViewKey | null>(null);
+    const [isPreloadingSchedule, setIsPreloadingSchedule] = useState(false);
+    const [scheduleViewCache, setScheduleViewCache] = useState<Record<string, GanttChartData>>({});
 
     useEffect(() => {
         // Initialize conversation ID on client side only
@@ -82,6 +100,109 @@ export function useAGUIStream() {
             });
         }
     }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const preloadScheduleViews = async () => {
+            if (!currentProject?.project_id) {
+                setScheduleViews([]);
+                setActiveScheduleViewKey(null);
+                setScheduleViewCache({});
+                return;
+            }
+
+            setIsPreloadingSchedule(true);
+            try {
+                const response = await fetch('http://localhost:8500/api/v1/schedule-views/preload', {
+                    headers: {
+                        'Lognos-ProjectID': currentProject.project_id,
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to preload schedule views (${response.status})`);
+                }
+
+                const data: ScheduleViewsPreloadResponse = await response.json();
+                if (cancelled) return;
+
+                const cache: Record<string, GanttChartData> = {};
+                if (data.payload) {
+                    cache[data.default_view_key] = data.payload;
+                    setGanttPanel({
+                        isVisible: true,
+                        data: data.payload,
+                        isLoading: false,
+                    });
+                }
+
+                setScheduleViewCache(cache);
+                setScheduleViews(data.views || []);
+                setActiveScheduleViewKey(data.default_view_key);
+            } catch (error) {
+                if (!cancelled) {
+                    console.error('Failed to preload schedule views', error);
+                    setScheduleViews([]);
+                    setActiveScheduleViewKey(null);
+                    setScheduleViewCache({});
+                }
+            } finally {
+                if (!cancelled) {
+                    setIsPreloadingSchedule(false);
+                }
+            }
+        };
+
+        preloadScheduleViews();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [currentProject?.project_id]);
+
+    const switchScheduleView = useCallback(async (viewKey: ScheduleViewKey) => {
+        if (!currentProject?.project_id) {
+            return;
+        }
+
+        const cached = scheduleViewCache[viewKey];
+        if (cached) {
+            setActiveScheduleViewKey(viewKey);
+            setGanttPanel({ isVisible: true, data: cached, isLoading: false });
+            return;
+        }
+
+        if (viewKey === 'custom') {
+            return;
+        }
+
+        setIsPreloadingSchedule(true);
+        try {
+            const response = await fetch(`http://localhost:8500/api/v1/schedule-views/${viewKey}`, {
+                headers: {
+                    'Lognos-ProjectID': currentProject.project_id,
+                },
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to load view ${viewKey} (${response.status})`);
+            }
+
+            const data: ScheduleViewResponse = await response.json();
+            if (!data.payload) {
+                return;
+            }
+
+            setScheduleViewCache((prev) => ({ ...prev, [viewKey]: data.payload }));
+            setActiveScheduleViewKey(viewKey);
+            setGanttPanel({ isVisible: true, data: data.payload, isLoading: false });
+        } catch (error) {
+            console.error(`Failed to switch schedule view ${viewKey}`, error);
+        } finally {
+            setIsPreloadingSchedule(false);
+        }
+    }, [currentProject?.project_id, scheduleViewCache]);
 
     const sendMessage = useCallback(async (content: string) => {
         if (!content.trim()) return;
@@ -139,7 +260,6 @@ export function useAGUIStream() {
 
             // Buffer for incomplete SSE messages across chunks
             let sseBuffer = '';
-
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -203,6 +323,20 @@ export function useAGUIStream() {
                             } else if (isGanttPanelEvent(data)) {
                                 // Gantt panel show/hide event
                                 if (data.action === 'show' && data.data) {
+                                    setScheduleViewCache((prev) => ({ ...prev, custom: data.data }));
+                                    setScheduleViews((prev) => {
+                                        const hasCustom = prev.some((view) => view.view_key === 'custom');
+                                        if (hasCustom) {
+                                            return prev.map((view) =>
+                                                view.view_key === 'custom'
+                                                    ? { ...view, computed_at: new Date().toISOString() }
+                                                    : view
+                                            );
+                                        }
+
+                                        return [...prev, { ...CUSTOM_VIEW_META, computed_at: new Date().toISOString() }];
+                                    });
+                                    setActiveScheduleViewKey('custom');
                                     setGanttPanel({
                                         isVisible: true,
                                         data: data.data,
@@ -290,5 +424,9 @@ export function useAGUIStream() {
         // Gantt panel state and handlers
         ganttPanel,
         hideGanttPanel,
+        scheduleViews,
+        activeScheduleViewKey,
+        switchScheduleView,
+        isPreloadingSchedule,
     };
 }

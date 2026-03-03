@@ -90,13 +90,32 @@ def _build_ms_project_hierarchy(
         if parent_wbs and parent_wbs in wbs_to_task_id:
             parent_id = f"task-{wbs_to_task_id[parent_wbs]}"
         
-        # Calculate durations
-        duration_hours = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
-        working_days = duration_hours / hours_per_day
-        
+        # Calculate dates and durations
         early_start = row.get('early_start')
         early_finish = row.get('early_finish')
-        
+        duration_hours = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
+        working_days = duration_hours / hours_per_day
+
+        # For MS summary tasks, tie bar geometry to visible descendant activities
+        if is_summary and wbs:
+            descendant_prefix = f"{wbs}."
+            descendants = df_sorted[
+                df_sorted['_wbs'].astype(str).str.startswith(descendant_prefix)
+                & (~df_sorted['is_summary'].fillna(False))
+            ]
+
+            if not descendants.empty:
+                descendant_starts = descendants['early_start'].dropna()
+                descendant_finishes = descendants['early_finish'].dropna()
+
+                if not descendant_starts.empty:
+                    early_start = descendant_starts.min()
+                if not descendant_finishes.empty:
+                    early_finish = descendant_finishes.max()
+
+                total_descendant_hours = descendants['target_drtn_hr_cnt'].fillna(0).astype(float).sum()
+                working_days = float(total_descendant_hours) / hours_per_day
+
         if pd.notna(early_start) and pd.notna(early_finish):
             calendar_days = (early_finish - early_start).days + 1
         else:
@@ -256,7 +275,8 @@ async def calculate_gantt_ws(
         calculator = NetworkCalculator(
             activities_df=workspace.activities_df,
             relationships_df=workspace.relationships_df,
-            project_start_date=workspace.project_start
+            project_start_date=workspace.project_start,
+            calendar_exceptions=workspace.calendar_exceptions,
         )
         
         try:
@@ -283,6 +303,17 @@ async def calculate_gantt_ws(
             project_finish=result.project_finish,
             critical_path_ids=result.critical_path_ids
         )
+
+        ms_validation_summary = None
+        if workspace.source == "ms_loaded":
+            ms_validation_summary = calculator.validate_against_ms_dates(tolerance_days=1)
+            logfire.info(
+                "MS date validation summary",
+                total_compared=ms_validation_summary['total_compared'],
+                matched=ms_validation_summary['matched'],
+                match_rate=ms_validation_summary['match_rate'],
+                discrepancy_count=len(ms_validation_summary['discrepancies']),
+            )
         
         # Apply filters BEFORE building Gantt items
         # This uses the existing filter_activities method which handles all filter logic
@@ -480,6 +511,17 @@ async def calculate_gantt_ws(
         filtered_task_ids = set(filtered_df['task_id'].tolist())
         gantt_relationships = []
         seen_relationships: set[tuple[int, int, str]] = set()  # Track (pred_id, succ_id, rel_type) to avoid duplicates
+
+        # Timeline bounds should follow visible (filtered) activities
+        visible_start = result.project_start
+        visible_finish = result.project_finish
+        if not filtered_df.empty:
+            visible_starts = filtered_df['early_start'].dropna()
+            visible_finishes = filtered_df['early_finish'].dropna()
+            if not visible_starts.empty:
+                visible_start = visible_starts.min()
+            if not visible_finishes.empty:
+                visible_finish = visible_finishes.max()
         
         if not workspace.relationships_df.empty:
             # Get task_code mapping for the filtered activities
@@ -527,8 +569,8 @@ async def calculate_gantt_ws(
             'data': {
                 'items': gantt_items,
                 'relationships': gantt_relationships,
-                'project_start': result.project_start.isoformat(),
-                'project_finish': result.project_finish.isoformat(),
+                'project_start': visible_start.isoformat(),
+                'project_finish': visible_finish.isoformat(),
                 'critical_path_length': result.critical_path_length_days,
                 'filter_applied': {
                     'wbs_path': req.wbs_path,
@@ -579,9 +621,23 @@ async def calculate_gantt_ws(
         total_note = f" ({len(filtered_df)} of {len(workspace.activities_df)} total)" if has_filters else ""
         
         if grouping_applied:
-            return f"Gantt displayed: {summary_count} groups, {detail_count} activities{grouping_note}{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}"
+            validation_note = ""
+            if ms_validation_summary and ms_validation_summary['total_compared'] > 0:
+                validation_note = (
+                    f", MS match {ms_validation_summary['matched']}/"
+                    f"{ms_validation_summary['total_compared']} "
+                    "within 1 day"
+                )
+            return f"Gantt displayed: {summary_count} groups, {detail_count} activities{grouping_note}{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}{validation_note}"
         else:
-            return f"Gantt displayed: {detail_count} activities{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}"
+            validation_note = ""
+            if ms_validation_summary and ms_validation_summary['total_compared'] > 0:
+                validation_note = (
+                    f", MS match {ms_validation_summary['matched']}/"
+                    f"{ms_validation_summary['total_compared']} "
+                    "within 1 day"
+                )
+            return f"Gantt displayed: {detail_count} activities{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}{validation_note}"
         
     except Exception as e:
         logfire.error("Error in calculate_gantt_ws", error=str(e))

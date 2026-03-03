@@ -168,6 +168,7 @@ interface GanttRowProps {
 
 function GanttRow({ item, colorIndex }: GanttRowProps) {
   const barColor = getBarColor(colorIndex);
+  const isMilestone = item.working_days === 0 || item.calendar_days === 0;
 
   return (
     <div className="flex items-center group">
@@ -181,33 +182,50 @@ function GanttRow({ item, colorIndex }: GanttRowProps) {
 
       {/* Timeline Bar Container */}
       <div className="flex-1 relative h-8 rounded">
-        {/* Task Bar */}
-        <div
-          className="absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg gantt-bar"
-          style={{
-            left: `${item.startPercentage}%`,
-            width: `${item.widthPercentage}%`,
-            backgroundColor: barColor,
-            minWidth: '20px',
-            color: 'white',
-          }}
-          title={`${item.s_item}
+        {isMilestone ? (
+          <div
+            className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rotate-45 transition-all duration-200 group-hover:opacity-80 shadow-lg"
+            style={{
+              left: `${item.startPercentage}%`,
+              width: '14px',
+              height: '14px',
+              backgroundColor: barColor,
+            }}
+            title={`${item.s_item}
 Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
 End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
 Working Days: ${item.working_days}d
 Calendar Days: ${item.calendar_days}d
 Total Float: ${item.total_float}d`}
-        >
-          {item.widthPercentage > 12 ? (
-            <span className="truncate px-1 gantt-duration-text" style={{ color: 'inherit' }}>
-              {item.working_days}d / {item.calendar_days}d
-            </span>
-          ) : item.widthPercentage > 6 ? (
-            <span className="truncate px-1 gantt-duration-text" style={{ color: 'inherit' }}>
-              {item.calendar_days}d
-            </span>
-          ) : null}
-        </div>
+          />
+        ) : (
+          <div
+            className="absolute top-1 bottom-1 rounded transition-all duration-200 group-hover:opacity-80 flex items-center justify-center text-xs font-medium shadow-lg gantt-bar"
+            style={{
+              left: `${item.startPercentage}%`,
+              width: `${item.widthPercentage}%`,
+              backgroundColor: barColor,
+              minWidth: '20px',
+              color: 'white',
+            }}
+            title={`${item.s_item}
+Start: ${format(parseISO(item.start), 'MMM dd, yyyy')}
+End: ${format(parseISO(item.finish), 'MMM dd, yyyy')}
+Working Days: ${item.working_days}d
+Calendar Days: ${item.calendar_days}d
+Total Float: ${item.total_float}d`}
+          >
+            {item.widthPercentage > 12 ? (
+              <span className="truncate px-1 gantt-duration-text" style={{ color: 'inherit' }}>
+                {item.working_days}d / {item.calendar_days}d
+              </span>
+            ) : item.widthPercentage > 6 ? (
+              <span className="truncate px-1 gantt-duration-text" style={{ color: 'inherit' }}>
+                {item.calendar_days}d
+              </span>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   );

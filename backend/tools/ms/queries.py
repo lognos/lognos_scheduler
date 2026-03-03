@@ -51,15 +51,18 @@ async def list_schedule_versions_ms(
         ]
         
         for v in versions:
-            status_date = v.get('status_date', '')
+            status_date = v.get('status_date') or ""
             if status_date:
-                status_date = status_date[:10]  # Just date part
+                status_date = str(status_date)[:10]  # Just date part
+
+            version_id = v.get('id')
+            version_name = v.get('version_name') or ""
             
             current = "YES" if v.get('is_current') else ""
             baseline = "YES" if v.get('is_baseline') else ""
             
             lines.append(
-                f"{v['id']:<6} {v['version_name']:<25} {current:<8} {baseline:<9} {status_date:<12}"
+                f"{str(version_id if version_id is not None else ''):<6} {str(version_name):<25} {current:<8} {baseline:<9} {str(status_date):<12}"
             )
         
         lines.append("")
@@ -115,7 +118,7 @@ async def get_schedule_overview_ms(
         
         # Get project constraints for status date
         constraints = await ctx.deps.ms_repository.get_project_constraints(version['id'])
-        status_date = constraints.get('status_date', '')[:10] if constraints else 'N/A'
+        status_date = str(constraints.get('status_date') or '')[:10] if constraints else 'N/A'
         
         # Build response
         version_label = f"{version['version_name']}"
@@ -465,7 +468,7 @@ async def get_calendar_ms(
             lines.append("")
             lines.append(f"Exceptions ({len(exceptions)}):")
             for exc in exceptions[:15]:
-                exc_date = exc.get('exception_date', '')[:10]
+                exc_date = str(exc.get('exception_date') or '')[:10]
                 is_work = "Working" if exc.get('is_working_day') else "Non-working"
                 exc_type = exc.get('exception_type', '')
                 hours = exc.get('working_hours', '')

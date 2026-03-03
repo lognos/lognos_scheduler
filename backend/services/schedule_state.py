@@ -59,6 +59,7 @@ class ScheduleWorkspace:
     last_calculation_at: Optional[datetime] = None
     project_start: Optional[date] = None
     project_finish: Optional[date] = None
+    calendar_exceptions: list[date] = field(default_factory=list)
     critical_path_ids: list[int] = field(default_factory=list)
     
     def mark_modified(self) -> None:
@@ -150,7 +151,8 @@ class ScheduleWorkspace:
         
         # WBS path filter
         if wbs_path and 'wbs_path' in df.columns:
-            df = df[df['wbs_path'].fillna('').str.startswith(wbs_path)]
+            wbs_path_series = df['wbs_path'].astype('string').fillna('')
+            df = df[wbs_path_series.str.startswith(wbs_path)]
         
         # Date range filters (using early_start/early_finish from calculation)
         if date_start and 'early_start' in df.columns:
@@ -173,9 +175,11 @@ class ScheduleWorkspace:
         if search_term:
             mask = pd.Series([False] * len(df), index=df.index)
             if 'task_code' in df.columns:
-                mask |= df['task_code'].fillna('').str.contains(search_term, case=False, na=False)
+                task_code_series = df['task_code'].astype('string').fillna('')
+                mask |= task_code_series.str.contains(search_term, case=False, na=False)
             if 'task_name' in df.columns:
-                mask |= df['task_name'].fillna('').str.contains(search_term, case=False, na=False)
+                task_name_series = df['task_name'].astype('string').fillna('')
+                mask |= task_name_series.str.contains(search_term, case=False, na=False)
             df = df[mask]
         
         return df
@@ -399,7 +403,9 @@ class ScheduleStateManager:
         version_id: int,
         activities: list[dict],
         relationships: list[dict],
-        calendar_info: Optional[dict] = None
+        calendar_info: Optional[dict] = None,
+        project_constraints: Optional[dict] = None,
+        constraint_types: Optional[list[dict]] = None,
     ) -> ScheduleWorkspace:
         """
         Load MS Project schedule from Supabase into a workspace.
@@ -418,6 +424,57 @@ class ScheduleStateManager:
         Returns:
             Populated ScheduleWorkspace
         """
+        def parse_date(value: object) -> Optional[date]:
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return None
+            if isinstance(value, date):
+                return value
+            parsed = pd.to_datetime(value, errors='coerce')
+            if pd.isna(parsed):
+                return None
+            return parsed.date()
+
+        def map_constraint_type(raw_value: object) -> Optional[str]:
+            if raw_value is None or (isinstance(raw_value, float) and pd.isna(raw_value)):
+                return None
+
+            raw_str = str(raw_value).strip()
+            if raw_str.startswith('CS_'):
+                return raw_str
+
+            normalized_by_id: dict[int, str] = {}
+            for ct in constraint_types or []:
+                ct_id = ct.get('id')
+                if ct_id is None:
+                    continue
+                label_parts = [
+                    str(ct.get('constraint_type') or ''),
+                    str(ct.get('name') or ''),
+                    str(ct.get('description') or ''),
+                    str(ct.get('code') or ''),
+                ]
+                label = ' '.join(label_parts).lower()
+                if 'start no earlier' in label:
+                    normalized_by_id[int(ct_id)] = 'CS_SNET'
+                elif 'must start' in label:
+                    normalized_by_id[int(ct_id)] = 'CS_MSOA'
+                elif 'as soon as possible' in label or 'asap' in label:
+                    normalized_by_id[int(ct_id)] = 'CS_ASAP'
+
+            if raw_str.isdigit():
+                mapped = normalized_by_id.get(int(raw_str))
+                if mapped:
+                    return mapped
+
+            lowered = raw_str.lower()
+            if 'start no earlier' in lowered:
+                return 'CS_SNET'
+            if 'must start' in lowered:
+                return 'CS_MSOA'
+            if lowered in {'asap', 'as soon as possible'}:
+                return 'CS_ASAP'
+            return None
+
         # Convert activities to DataFrame with P6-compatible column names
         activities_df = pd.DataFrame(activities) if activities else pd.DataFrame()
         
@@ -433,22 +490,58 @@ class ScheduleStateManager:
                 'total_float_d': 'total_float_days',
                 'actual_start': 'act_start_date',
                 'actual_finish': 'act_end_date',
+                'constraint_date': 'constraint_date',
             }
             
             for old_name, new_name in column_mapping.items():
                 if old_name in activities_df.columns:
                     activities_df[new_name] = activities_df[old_name]
+
+            # Preserve original MS dates for validation after recalculation
+            if 'start' in activities_df.columns:
+                activities_df['original_start'] = activities_df['start']
+            if 'finish' in activities_df.columns:
+                activities_df['original_finish'] = activities_df['finish']
             
             # Convert duration from days to hours (8 hrs/day for workspace compatibility)
             if 'duration_d' in activities_df.columns:
                 activities_df['target_drtn_hr_cnt'] = activities_df['duration_d'] * 8
-                activities_df['remain_drtn_hr_cnt'] = activities_df['duration_d'] * 8
+
+            if 'phys_complete_pct' not in activities_df.columns:
+                activities_df['phys_complete_pct'] = 0
+            activities_df['phys_complete_pct'] = pd.to_numeric(
+                activities_df['phys_complete_pct'],
+                errors='coerce'
+            ).fillna(0).clip(lower=0, upper=100)
+
+            if 'target_drtn_hr_cnt' not in activities_df.columns:
+                activities_df['target_drtn_hr_cnt'] = 0.0
+
+            activities_df['remain_drtn_hr_cnt'] = (
+                activities_df['target_drtn_hr_cnt'] *
+                (1 - (activities_df['phys_complete_pct'] / 100.0))
+            )
+
+            activities_df['status_code'] = activities_df['phys_complete_pct'].apply(
+                lambda pct: 'TK_NotStart' if pct <= 0 else ('TK_Complete' if pct >= 100 else 'TK_Active')
+            )
+
+            if 'constraint_type' in activities_df.columns:
+                activities_df['constraint_type'] = activities_df['constraint_type'].apply(map_constraint_type)
+
+            if 'constraint_date' in activities_df.columns:
+                activities_df['constraint_date'] = activities_df['constraint_date'].apply(parse_date)
+
+            for date_col in ['target_start_date', 'target_end_date', 'original_start', 'original_finish', 'act_start_date', 'act_end_date']:
+                if date_col in activities_df.columns:
+                    activities_df[date_col] = activities_df[date_col].apply(parse_date)
             
             # Ensure required columns exist
             required_cols = [
                 'task_id', 'task_code', 'task_name', 'target_drtn_hr_cnt',
                 'remain_drtn_hr_cnt', 'target_start_date', 'target_end_date',
-                'wbs', 'total_float_days'
+                'wbs', 'total_float_days', 'status_code', 'constraint_type',
+                'constraint_date', 'original_start', 'original_finish'
             ]
             for col in required_cols:
                 if col not in activities_df.columns:
@@ -457,6 +550,24 @@ class ScheduleStateManager:
             # Map wbs to wbs_path for filtering compatibility
             if 'wbs' in activities_df.columns:
                 activities_df['wbs_path'] = activities_df['wbs']
+
+        # Determine project start from constraints or activity minimum start
+        project_start = None
+        if project_constraints:
+            for key in ('project_start', 'start_date', 'planned_start', 'schedule_start', 'data_date'):
+                if key in project_constraints and project_constraints.get(key):
+                    project_start = parse_date(project_constraints.get(key))
+                    if project_start:
+                        break
+
+        if project_start is None and not activities_df.empty and 'target_start_date' in activities_df.columns:
+            if 'is_summary' in activities_df.columns:
+                activity_starts = activities_df[~activities_df['is_summary'].fillna(False).astype(bool)]['target_start_date']
+            else:
+                activity_starts = activities_df['target_start_date']
+            activity_starts = activity_starts.dropna()
+            if not activity_starts.empty:
+                project_start = min(activity_starts)
         
         # Convert relationships to DataFrame
         relationships_df = pd.DataFrame(relationships) if relationships else pd.DataFrame()
@@ -484,6 +595,12 @@ class ScheduleStateManager:
                 relationships_df['pred_type'] = relationships_df['pred_type'].apply(
                     lambda x: f"PR_{x}" if x and not str(x).startswith('PR_') else x
                 )
+
+        calendar_exceptions: list[date] = []
+        for exception in (calendar_info or {}).get('exceptions', []):
+            exception_date = parse_date(exception.get('exception_date'))
+            if exception_date:
+                calendar_exceptions.append(exception_date)
         
         # Create workspace
         workspace = ScheduleWorkspace(
@@ -494,7 +611,9 @@ class ScheduleStateManager:
             activity_codes_df=pd.DataFrame(),  # MS schedules don't use P6 activity codes
             code_types_with_values={},
             source="ms_loaded",
-            source_version_id=version_id
+            source_version_id=version_id,
+            project_start=project_start,
+            calendar_exceptions=sorted(set(calendar_exceptions))
         )
         self._workspaces[conversation_id] = workspace
         
@@ -504,7 +623,9 @@ class ScheduleStateManager:
             project_name=project_name,
             version_id=version_id,
             activity_count=len(activities_df),
-            relationship_count=len(relationships_df)
+            relationship_count=len(relationships_df),
+            project_start=project_start.isoformat() if project_start else None,
+            calendar_exception_count=len(calendar_exceptions)
         )
         
         return workspace
