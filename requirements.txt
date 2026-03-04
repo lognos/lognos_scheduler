@@ -16,6 +16,7 @@ azure-identity
 msgraph-sdk
 markdown
 bleach
+email-validator
 google-genai
 openpyxl
 python-docx

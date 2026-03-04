@@ -6,8 +6,6 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     UserPromptPart,
     TextPart,
-    ToolCallPart,
-    ToolReturnPart,
 )
 from pydantic_ai.settings import ModelSettings
 from backend.prompt.loader import PromptLoader
@@ -78,7 +76,14 @@ from backend.tools.ms import (
     create_schedule_subversion_ms,
     promote_subversion_ms,
 )
-from backend.email_tools import check_email_service_health_tool
+from backend.email_tools import (
+    check_email_service_health_tool,
+    create_email_draft_tool,
+    list_email_drafts_tool,
+    modify_email_draft_tool,
+    send_email_draft_tool,
+    send_email_tool,
+)
 from backend.models.io import AgentOutput
 from backend.config.settings import settings
 
@@ -161,18 +166,7 @@ def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
     
     return filtered
 
-# Define the Agent with structured output
-scheduling_agent = Agent(
-    settings.GOOGLE_DEFAULT_MODEL,
-    deps_type=AgentDeps,
-    output_type=AgentOutput,  # Structured output: SchedulingResponse | ClarificationRequest | ErrorResponse
-    retries=5,  # Increased retries for Gemini empty response issues
-    model_settings=ModelSettings(
-        temperature=0.3,  # Lower temperature for more consistent responses
-    ),
-    history_processors=[filter_tool_history],  # Filter tool calls from history to reduce tokens
-    system_prompt=PromptLoader.get_prompt("scheduler_system.xml.j2"),
-    tools=[
+BASE_TOOLS = [
         # P6 Query tools
         get_activity_p6,
         search_activities_p6,
@@ -237,5 +231,30 @@ scheduling_agent = Agent(
 
         # Email tools (Phase 0)
         check_email_service_health_tool,
-    ],
+]
+
+if settings.EMAIL_ENABLED and settings.ENABLE_EMAIL_PHASE1_SEND:
+    BASE_TOOLS.extend(
+        [
+            create_email_draft_tool,
+            list_email_drafts_tool,
+            modify_email_draft_tool,
+            send_email_draft_tool,
+            send_email_tool,
+        ]
+    )
+
+
+# Define the Agent with structured output
+scheduling_agent = Agent(
+    settings.GOOGLE_DEFAULT_MODEL,
+    deps_type=AgentDeps,
+    output_type=AgentOutput,  # Structured output: SchedulingResponse | ClarificationRequest | ErrorResponse
+    retries=5,  # Increased retries for Gemini empty response issues
+    model_settings=ModelSettings(
+        temperature=0.3,  # Lower temperature for more consistent responses
+    ),
+    history_processors=[filter_tool_history],  # Filter tool calls from history to reduce tokens
+    system_prompt=PromptLoader.get_prompt("scheduler_system.xml.j2"),
+    tools=BASE_TOOLS,
 )
