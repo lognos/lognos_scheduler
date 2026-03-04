@@ -10,7 +10,11 @@ import logfire
 
 from backend.repositories.ms_schedule_repository import MSScheduleRepository
 from backend.repositories.schedule_view_repository import ScheduleViewRepository
-from backend.services.gantt_payload_builder import build_v2_gantt_payload, build_relationship_id
+from backend.services.gantt_payload_builder import (
+    build_v2_gantt_payload,
+    build_relationship_projections,
+    build_schedule_item_payload,
+)
 
 
 class ScheduleViewService:
@@ -409,7 +413,6 @@ class ScheduleViewService:
         # Preserve stable WBS order
         filtered_items.sort(key=lambda item: item["wbs"])
 
-        id_to_sitem = {item["id"]: item["s_item_id"] for item in filtered_items if item["id"] is not None}
         filtered_id_set = {item["id"] for item in filtered_items if item["id"] is not None}
 
         # Parent linkage for summary and detail rows
@@ -439,52 +442,56 @@ class ScheduleViewService:
 
         items_payload = []
         for item in filtered_items:
-            start_text = item["start_dt"].date().isoformat() if item["start_dt"] else ""
-            finish_text = item["finish_dt"].date().isoformat() if item["finish_dt"] else ""
             bl_start_dt = item.get("baseline_start_dt")
             bl_finish_dt = item.get("baseline_finish_dt")
-            item_payload = {
-                "id": int(item["id"]),
-                "s_item_id": item["s_item_id"],
-                "s_item": item["s_item"],
-                "working_days": item["working_days"],
-                "calendar_days": item["calendar_days"],
-                "total_float": item["total_float"],
-                "start": start_text,
-                "finish": finish_text,
-                "is_critical": item["is_critical"],
-                "wbs_path": item["wbs"],
-                "status": item["status"],
-                "percent_complete": item.get("percent_complete"),
-                "level": item["level"],
-                "is_summary": item["is_summary"],
-                "parent_id": parent_id_for(item),
-                "children_count": summary_children_count.get(item["s_item_id"], 0),
-                "group_name": None,
-                "baseline_start": bl_start_dt.date().isoformat() if bl_start_dt else None,
-                "baseline_finish": bl_finish_dt.date().isoformat() if bl_finish_dt else None,
-                "baseline_duration_d": item.get("baseline_duration_d"),
-            }
+            item_payload = build_schedule_item_payload(
+                item_id=int(item["id"]),
+                s_item_id=item["s_item_id"],
+                s_item=item["s_item"],
+                working_days=float(item["working_days"]),
+                calendar_days=int(item["calendar_days"]),
+                total_float=float(item["total_float"]),
+                start=item["start_dt"],
+                finish=item["finish_dt"],
+                is_critical=bool(item["is_critical"]),
+                wbs_path=item["wbs"],
+                status=item["status"],
+                percent_complete=item.get("percent_complete"),
+                level=int(item["level"]),
+                is_summary=bool(item["is_summary"]),
+                parent_id=parent_id_for(item),
+                children_count=summary_children_count.get(item["s_item_id"], 0),
+                group_name=None,
+                baseline_start=bl_start_dt,
+                baseline_finish=bl_finish_dt,
+                baseline_duration_d=item.get("baseline_duration_d"),
+            )
             items_payload.append(item_payload)
 
-        relationships_payload = []
-        for rel in relationships:
-            pred_id = rel.get("pred_id")
-            succ_id = rel.get("succ_id")
-            if pred_id not in filtered_id_set or succ_id not in filtered_id_set:
-                continue
+        all_id_to_sitem = {
+            item["id"]: item["s_item_id"]
+            for item in parsed
+            if item.get("id") is not None
+        }
+        raw_relationships = [
+            {
+                "pred_id": rel.get("pred_id"),
+                "succ_id": rel.get("succ_id"),
+                "rel_type": rel.get("rel_type") or "FS",
+                "lag_days": float(rel.get("lag_d") or 0),
+            }
+            for rel in relationships
+        ]
 
-            pred = activity_by_id.get(pred_id) or {}
-            succ = activity_by_id.get(succ_id) or {}
-            relationships_payload.append(
-                {
-                    "pred_id": id_to_sitem.get(pred_id, str(pred_id)),
-                    "succ_id": id_to_sitem.get(succ_id, str(succ_id)),
-                    "rel_type": rel.get("rel_type") or "FS",
-                    "lag_days": float(rel.get("lag_d") or 0),
-                    "is_critical": self._is_critical(pred) and self._is_critical(succ),
-                }
-            )
+        relationships_payload, envelope_relationships, visible_relationship_ids = build_relationship_projections(
+            raw_relationships=raw_relationships,
+            id_to_code_all={int(k): str(v) for k, v in all_id_to_sitem.items()},
+            visible_id_set={int(task_id) for task_id in filtered_id_set},
+            is_critical_edge=lambda pred_id, succ_id: (
+                self._is_critical(activity_by_id.get(pred_id) or {})
+                and self._is_critical(activity_by_id.get(succ_id) or {})
+            ),
+        )
 
         all_dates = [item["start_dt"] for item in filtered_items if item["start_dt"]] + [
             item["finish_dt"] for item in filtered_items if item["finish_dt"]
@@ -580,33 +587,6 @@ class ScheduleViewService:
                 schedule_version_id,
             )
             available_baseline_modes["own"] = has_baseline
-
-        all_id_to_sitem = {
-            item["id"]: item["s_item_id"]
-            for item in parsed
-            if item.get("id") is not None
-        }
-        envelope_relationships: list[dict] = []
-        for rel in relationships:
-            pred_id = rel.get("pred_id")
-            succ_id = rel.get("succ_id")
-            if pred_id not in all_id_to_sitem or succ_id not in all_id_to_sitem:
-                continue
-            rel_type = rel.get("rel_type") or "FS"
-            envelope_relationships.append(
-                {
-                    "id": build_relationship_id(all_id_to_sitem[pred_id], all_id_to_sitem[succ_id], rel_type),
-                    "pred_id": all_id_to_sitem[pred_id],
-                    "succ_id": all_id_to_sitem[succ_id],
-                    "rel_type": rel_type,
-                    "lag_days": float(rel.get("lag_d") or 0),
-                }
-            )
-
-        visible_relationship_ids = [
-            build_relationship_id(rel["pred_id"], rel["succ_id"], rel.get("rel_type") or "FS")
-            for rel in relationships_payload
-        ]
 
         return build_v2_gantt_payload(
             legacy_payload=legacy_payload,
