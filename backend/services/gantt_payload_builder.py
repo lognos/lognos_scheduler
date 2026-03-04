@@ -1,0 +1,196 @@
+"""Shared helpers for canonical Gantt payload construction."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def _relationship_id(pred_id: str, succ_id: str, rel_type: str) -> str:
+    return f"{pred_id}->{succ_id}:{rel_type or 'FS'}"
+
+
+def build_relationship_id(pred_id: str, succ_id: str, rel_type: str) -> str:
+    """Public helper for canonical relationship identifier format."""
+    return _relationship_id(pred_id, succ_id, rel_type)
+
+
+def _derive_envelope_relationships(relationships: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rel in relationships:
+        pred = str(rel.get("pred_id") or "")
+        succ = str(rel.get("succ_id") or "")
+        rel_type = str(rel.get("rel_type") or "FS")
+        rel_id = _relationship_id(pred, succ, rel_type)
+        if rel_id in seen:
+            continue
+        seen.add(rel_id)
+        payload.append(
+            {
+                "id": rel_id,
+                "pred_id": pred,
+                "succ_id": succ,
+                "rel_type": rel_type,
+                "lag_days": float(rel.get("lag_days") or 0),
+            }
+        )
+    return payload
+
+
+def _derive_visible_relationship_ids(relationships: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    for rel in relationships:
+        pred = str(rel.get("pred_id") or "")
+        succ = str(rel.get("succ_id") or "")
+        rel_type = str(rel.get("rel_type") or "FS")
+        ids.append(_relationship_id(pred, succ, rel_type))
+    return ids
+
+
+def _derive_own_baseline_rows(activities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for activity in activities:
+        rows.append(
+            {
+                "id": int(activity.get("id", 0)),
+                "s_item_id": str(activity.get("s_item_id") or activity.get("id") or ""),
+                "start": activity.get("baseline_start"),
+                "finish": activity.get("baseline_finish"),
+                "duration_d": activity.get("baseline_duration_d"),
+            }
+        )
+    return rows
+
+
+def build_v2_gantt_payload(
+    *,
+    legacy_payload: dict[str, Any],
+    view_id: str | None,
+    view_title: str,
+    project_id: str | int | None,
+    schedule_version_id: int | None,
+    scenario_id: str | None = None,
+    available_baseline_modes: dict[str, bool] | None = None,
+    selected_baseline_mode: str | None = None,
+    render_options: dict[str, Any] | None = None,
+    data_envelope_options: dict[str, Any] | None = None,
+    envelope_activities: list[dict[str, Any]] | None = None,
+    envelope_relationships: list[dict[str, Any]] | None = None,
+    envelope_updates: list[dict[str, Any]] | None = None,
+    visible_activity_ids: list[int] | None = None,
+    visible_relationship_ids: list[str] | None = None,
+    own_baseline_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload = dict(legacy_payload)
+
+    items = payload.get("items") or []
+    relationships = payload.get("relationships") or []
+    filter_applied = payload.get("filter_applied") or {}
+
+    render_options = render_options or {}
+    data_envelope_options = data_envelope_options or {}
+
+    if available_baseline_modes is None:
+        available_baseline_modes = payload.get("available_baseline_modes") or {
+            "own": bool(payload.get("has_baseline")),
+            "previous_version": False,
+            "database_baseline": False,
+        }
+
+    if selected_baseline_mode is None:
+        selected_baseline_mode = str(payload.get("baseline_mode") or "own")
+
+    if not available_baseline_modes.get(selected_baseline_mode, False) and available_baseline_modes.get("own", False):
+        selected_baseline_mode = "own"
+
+    if envelope_activities is None:
+        envelope_activities = list(items)
+
+    if envelope_relationships is None:
+        envelope_relationships = _derive_envelope_relationships(list(relationships))
+
+    if visible_activity_ids is None:
+        visible_activity_ids = [
+            int(item.get("id"))
+            for item in items
+            if item.get("id") is not None
+        ]
+
+    if visible_relationship_ids is None:
+        visible_relationship_ids = _derive_visible_relationship_ids(list(relationships))
+
+    if own_baseline_rows is None:
+        own_baseline_rows = _derive_own_baseline_rows(envelope_activities)
+
+    include_links = bool(data_envelope_options.get("include_links", True))
+    include_updates = bool(data_envelope_options.get("include_updates", True))
+    requested_baselines = data_envelope_options.get("include_baselines") or ["own"]
+
+    columns_selected = render_options.get("columns") or ["start", "finish", "total_float", "percent_complete"]
+    columns_available = ["start", "finish", "total_float", "percent_complete"]
+
+    if envelope_updates is None:
+        envelope_updates = payload.get("activity_updates") or []
+
+    payload["schema_version"] = "gantt.custom.v2"
+    payload["view"] = {
+        "id": view_id,
+        "title": view_title,
+        "grouping": payload.get("grouping"),
+        "source": {
+            "project_id": project_id,
+            "schedule_version_id": schedule_version_id,
+            "scenario_id": scenario_id,
+        },
+    }
+
+    payload["capabilities"] = {
+        "links": {
+            "available": bool(envelope_relationships),
+            "render_enabled": bool(render_options.get("show_links", True)),
+        },
+        "updates": {
+            "available": bool(envelope_updates),
+            "render_enabled": bool(render_options.get("show_updates", True)),
+        },
+        "baseline_modes": {
+            "available": [mode for mode, enabled in available_baseline_modes.items() if enabled],
+            "selected": selected_baseline_mode,
+        },
+        "columns": {
+            "available": columns_available,
+            "selected": columns_selected,
+        },
+        "what_if": {
+            "supported": True,
+            "active_scenario_id": scenario_id,
+            "overlay_available": False,
+        },
+    }
+
+    payload["data_envelope"] = {
+        "activities": envelope_activities,
+        "relationships": envelope_relationships if include_links else [],
+        "baselines": {
+            "own": {"activities": own_baseline_rows if "own" in requested_baselines else []},
+            "previous_version": {"activities": [] if "previous_version" in requested_baselines else []},
+            "database_baseline": {"activities": [] if "database_baseline" in requested_baselines else []},
+        },
+        "updates": envelope_updates if include_updates else [],
+    }
+
+    payload["display"] = {
+        "filter_applied": filter_applied,
+        "visible_activity_ids": visible_activity_ids,
+        "visible_relationship_ids": visible_relationship_ids,
+        "project_start": payload.get("project_start", ""),
+        "project_finish": payload.get("project_finish", ""),
+        "critical_path_length": payload.get("critical_path_length", 0),
+        "total_activities": payload.get("total_activities", 0),
+        "filtered_activities": payload.get("filtered_activities", 0),
+        "preserve_order": payload.get("preserve_order", False),
+    }
+
+    payload["available_baseline_modes"] = available_baseline_modes
+    payload["baseline_mode"] = selected_baseline_mode
+    return payload

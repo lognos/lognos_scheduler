@@ -6,6 +6,7 @@ import logfire
 from pydantic_ai import RunContext
 from backend.tools._base import AgentDeps
 from backend.services.schedule_state import schedule_state_manager
+from backend.services.gantt_payload_builder import build_v2_gantt_payload
 from backend.models.io import (
     LoadScheduleWsRequest,
     CreateScheduleWsRequest,
@@ -354,6 +355,14 @@ async def calculate_gantt_ws(
                 calendar_days = (early_finish - early_start).days + 1
             else:
                 calendar_days = 0
+
+            percent_complete = row.get('percent_complete')
+            if pd.isna(percent_complete):
+                percent_complete = row.get('phys_complete_pct')
+
+            baseline_start = row.get('baseline_start')
+            baseline_finish = row.get('baseline_finish')
+            baseline_duration = row.get('baseline_duration_d')
             
             return {
                 'id': int(row['task_id']),
@@ -367,6 +376,10 @@ async def calculate_gantt_ws(
                 'is_critical': bool(row.get('is_critical', False)),
                 'wbs_path': row.get('wbs_path', ''),
                 'status': row.get('status', 'not_started'),
+                'percent_complete': float(percent_complete) if pd.notna(percent_complete) else None,
+                'baseline_start': baseline_start.isoformat() if pd.notna(baseline_start) else None,
+                'baseline_finish': baseline_finish.isoformat() if pd.notna(baseline_finish) else None,
+                'baseline_duration_d': float(baseline_duration) if pd.notna(baseline_duration) else None,
                 'level': level,
                 'is_summary': False,
                 'parent_id': parent_id,
@@ -509,8 +522,12 @@ async def calculate_gantt_ws(
         # Build relationships data for Gantt arrows
         # Filter relationships to only include those where both activities are in filtered view
         filtered_task_ids = set(filtered_df['task_id'].tolist())
+        all_task_ids = set(workspace.activities_df['task_id'].tolist())
         gantt_relationships = []
         seen_relationships: set[tuple[int, int, str]] = set()  # Track (pred_id, succ_id, rel_type) to avoid duplicates
+        visible_relationship_ids: list[str] = []
+        envelope_relationships: list[dict] = []
+        all_seen_relationships: set[tuple[int, int, str]] = set()
 
         # Timeline bounds should follow visible (filtered) activities
         visible_start = result.project_start
@@ -526,17 +543,34 @@ async def calculate_gantt_ws(
         if not workspace.relationships_df.empty:
             # Get task_code mapping for the filtered activities
             task_id_to_code = dict(zip(filtered_df['task_id'], filtered_df['task_code']))
+            all_task_id_to_code = dict(zip(workspace.activities_df['task_id'], workspace.activities_df['task_code']))
             
             for _, rel in workspace.relationships_df.iterrows():
                 pred_id = rel.get('pred_task_id')
                 succ_id = rel.get('task_id')
+                pred_type = rel.get('pred_type', 'PR_FS')
+                rel_type = pred_type.replace('PR_', '') if isinstance(pred_type, str) and pred_type.startswith('PR_') else pred_type
+
+                lag_hours = rel.get('lag_hr_cnt', 0)
+                lag_days = (float(lag_hours) / hours_per_day) if pd.notna(lag_hours) else 0
+
+                if pred_id in all_task_ids and succ_id in all_task_ids:
+                    all_rel_key = (pred_id, succ_id, rel_type)
+                    if all_rel_key not in all_seen_relationships:
+                        all_seen_relationships.add(all_rel_key)
+                        pred_code_all = all_task_id_to_code.get(pred_id, str(pred_id))
+                        succ_code_all = all_task_id_to_code.get(succ_id, str(succ_id))
+                        rel_id_all = f"{pred_code_all}->{succ_code_all}:{rel_type or 'FS'}"
+                        envelope_relationships.append({
+                            'id': rel_id_all,
+                            'pred_id': pred_code_all,
+                            'succ_id': succ_code_all,
+                            'rel_type': rel_type if rel_type else 'FS',
+                            'lag_days': lag_days,
+                        })
                 
                 # Only include if both activities are in the filtered view
                 if pred_id in filtered_task_ids and succ_id in filtered_task_ids:
-                    pred_type = rel.get('pred_type', 'PR_FS')
-                    # Convert P6 format (PR_FS) to simple format (FS)
-                    rel_type = pred_type.replace('PR_', '') if isinstance(pred_type, str) and pred_type.startswith('PR_') else pred_type
-                    
                     # Skip duplicate relationships (same pred, succ, and type)
                     rel_key = (pred_id, succ_id, rel_type)
                     if rel_key in seen_relationships:
@@ -549,45 +583,105 @@ async def calculate_gantt_ws(
                         pred_id in result.critical_path_ids and
                         succ_id in result.critical_path_ids
                     )
-                    
-                    # Convert lag from hours to days
-                    lag_hours = rel.get('lag_hr_cnt', 0)
-                    lag_days = (float(lag_hours) / hours_per_day) if pd.notna(lag_hours) else 0
+
+                    pred_code = task_id_to_code.get(pred_id, str(pred_id))
+                    succ_code = task_id_to_code.get(succ_id, str(succ_id))
+                    rel_id = f"{pred_code}->{succ_code}:{rel_type if rel_type else 'FS'}"
+                    visible_relationship_ids.append(rel_id)
                     
                     gantt_relationships.append({
-                        'pred_id': task_id_to_code.get(pred_id, str(pred_id)),
-                        'succ_id': task_id_to_code.get(succ_id, str(succ_id)),
+                        'pred_id': pred_code,
+                        'succ_id': succ_code,
                         'rel_type': rel_type if rel_type else 'FS',
                         'lag_days': lag_days,
                         'is_critical': is_critical,
                     })
+
+        requested_baseline_modes = req.data_envelope.include_baselines if req.data_envelope and req.data_envelope.include_baselines else ['own']
+        has_own_baseline = False
+        if 'baseline_start' in workspace.activities_df.columns or 'baseline_finish' in workspace.activities_df.columns:
+            starts = workspace.activities_df.get('baseline_start')
+            finishes = workspace.activities_df.get('baseline_finish')
+            has_own_baseline = bool(
+                (starts is not None and starts.notna().any()) or
+                (finishes is not None and finishes.notna().any())
+            )
+
+        available_baseline_modes = {
+            'own': has_own_baseline,
+            'previous_version': False,
+            'database_baseline': False,
+        }
+
+        selected_baseline_mode = req.render_options.baseline_mode if req.render_options else 'own'
+        if not available_baseline_modes.get(selected_baseline_mode, False) and available_baseline_modes['own']:
+            selected_baseline_mode = 'own'
+
+        include_hierarchy = True if req.data_envelope is None else req.data_envelope.include_hierarchy
+
+        envelope_activities = [build_activity_item(row, level=2 if include_hierarchy else 1, parent_id=None) for _, row in workspace.activities_df.iterrows()]
+
+        own_baseline_rows = []
+        if has_own_baseline and 'own' in requested_baseline_modes:
+            for _, row in workspace.activities_df.iterrows():
+                start_raw = row.get('baseline_start')
+                finish_raw = row.get('baseline_finish')
+                duration_raw = row.get('baseline_duration_d')
+                own_baseline_rows.append({
+                    'id': int(row['task_id']),
+                    's_item_id': row.get('task_code', str(row['task_id'])),
+                    'start': start_raw.isoformat() if pd.notna(start_raw) else None,
+                    'finish': finish_raw.isoformat() if pd.notna(finish_raw) else None,
+                    'duration_d': float(duration_raw) if pd.notna(duration_raw) else None,
+                })
+
+        legacy_payload = {
+            'items': gantt_items,
+            'relationships': gantt_relationships,
+            'project_start': visible_start.isoformat(),
+            'project_finish': visible_finish.isoformat(),
+            'critical_path_length': result.critical_path_length_days,
+            'filter_applied': {
+                'wbs_path': req.wbs_path,
+                'critical_only': req.critical_only,
+                'activity_codes': req.activity_codes,
+                'status': req.status,
+                'search_term': req.search_term,
+                'date_start': req.date_start,
+                'date_end': req.date_end,
+            },
+            'total_activities': len(workspace.activities_df),
+            'filtered_activities': len(filtered_df),
+            'available_activity_codes': workspace.code_types_with_values,
+            'grouping': grouping_applied,
+            'preserve_order': bool(is_ms_schedule),
+            'has_baseline': has_own_baseline,
+            'baseline_mode': selected_baseline_mode,
+            'available_baseline_modes': available_baseline_modes,
+        }
+
+        gantt_payload = build_v2_gantt_payload(
+            legacy_payload=legacy_payload,
+            view_id=req.view_id,
+            view_title=req.title,
+            project_id=workspace.project_id,
+            schedule_version_id=workspace.source_version_id,
+            available_baseline_modes=available_baseline_modes,
+            selected_baseline_mode=selected_baseline_mode,
+            render_options=req.render_options.model_dump() if req.render_options else None,
+            data_envelope_options=req.data_envelope.model_dump() if req.data_envelope else None,
+            envelope_activities=envelope_activities,
+            envelope_relationships=envelope_relationships,
+            visible_activity_ids=[int(task_id) for task_id in filtered_df['task_id'].tolist()],
+            visible_relationship_ids=visible_relationship_ids,
+            own_baseline_rows=own_baseline_rows,
+        )
         
         # Stream Gantt panel event to frontend
         gantt_event = {
             'type': 'gantt_panel',
             'action': 'show',
-            'data': {
-                'items': gantt_items,
-                'relationships': gantt_relationships,
-                'project_start': visible_start.isoformat(),
-                'project_finish': visible_finish.isoformat(),
-                'critical_path_length': result.critical_path_length_days,
-                'filter_applied': {
-                    'wbs_path': req.wbs_path,
-                    'critical_only': req.critical_only,
-                    'activity_codes': req.activity_codes,
-                    'status': req.status,
-                    'search_term': req.search_term,
-                    'date_start': req.date_start,
-                    'date_end': req.date_end,
-                },
-                'total_activities': len(workspace.activities_df),
-                'filtered_activities': len(filtered_df),
-                'available_activity_codes': workspace.code_types_with_values,
-                'grouping': grouping_applied,
-                # MS Project schedules are pre-sorted by WBS hierarchy - don't re-sort on frontend
-                'preserve_order': bool(is_ms_schedule),
-            }
+            'data': gantt_payload,
         }
         
         # Store event for streaming (will be picked up by chat router)

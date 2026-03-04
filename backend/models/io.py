@@ -336,9 +336,62 @@ class CreateScheduleWsRequest(BaseModel):
     )
 
 
+class GanttRenderOptions(BaseModel):
+    """Optional render intent for custom Gantt views."""
+    model_config = ConfigDict(strict=True)
+
+    columns: list[Literal["start", "finish", "total_float", "percent_complete"]] | None = Field(
+        default=None,
+        description="Optional list of columns requested by the client for rendering."
+    )
+    show_links: bool = Field(
+        default=True,
+        description="If True, enable dependency link rendering when link data is available."
+    )
+    show_updates: bool = Field(
+        default=True,
+        description="If True, enable activity update indicators when update data is available."
+    )
+    baseline_mode: Literal["own", "previous_version", "database_baseline"] = Field(
+        default="own",
+        description="Requested baseline comparison mode for rendering."
+    )
+
+
+class GanttDataEnvelopeRequest(BaseModel):
+    """Optional data envelope requirements for custom Gantt views."""
+    model_config = ConfigDict(strict=True)
+
+    include_links: bool = Field(
+        default=True,
+        description="If True, include relationship/link data in the payload envelope."
+    )
+    include_updates: bool = Field(
+        default=True,
+        description="If True, include update data in the payload envelope."
+    )
+    include_baselines: list[Literal["own", "previous_version", "database_baseline"]] | None = Field(
+        default=None,
+        description="Baseline datasets requested in the payload envelope."
+    )
+    include_optional_fields: list[Literal["percent_complete", "free_float_days"]] | None = Field(
+        default=None,
+        description="Optional activity fields requested in the payload envelope."
+    )
+    include_hierarchy: bool = Field(
+        default=True,
+        description="If True, include hierarchy metadata in envelope activities when available."
+    )
+
+
 class CalculateGanttWsRequest(BaseModel):
     """Request to run CPM calculations and display Gantt chart with optional grouping and filtering."""
     model_config = ConfigDict(strict=True)
+
+    view_id: str | None = Field(
+        default=None,
+        description="Optional custom view identifier for traceability."
+    )
     
     title: str = Field(
         default="Schedule Analysis",
@@ -385,6 +438,14 @@ class CalculateGanttWsRequest(BaseModel):
     wbs_path: str | None = Field(
         default=None,
         description="Filter by WBS path prefix (e.g., 'Project/Phase1/Civil')"
+    )
+    render_options: GanttRenderOptions | None = Field(
+        default=None,
+        description="Optional rendering intent such as selected columns, links visibility, and baseline mode."
+    )
+    data_envelope: GanttDataEnvelopeRequest | None = Field(
+        default=None,
+        description="Optional data envelope requirements that define which datasets must be present in response."
     )
 
 

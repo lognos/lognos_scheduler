@@ -10,6 +10,7 @@ import logfire
 
 from backend.repositories.ms_schedule_repository import MSScheduleRepository
 from backend.repositories.schedule_view_repository import ScheduleViewRepository
+from backend.services.gantt_payload_builder import build_v2_gantt_payload, build_relationship_id
 
 
 class ScheduleViewService:
@@ -539,7 +540,7 @@ class ScheduleViewService:
                 visible_sitem_ids=visible_sitem_ids,
             )
 
-        return {
+        legacy_payload = {
             "items": items_payload,
             "relationships": relationships_payload,
             "project_start": project_start,
@@ -565,6 +566,62 @@ class ScheduleViewService:
             "activity_updates": activity_updates_payload,
             "baseline_activity_updates": baseline_activity_updates,
         }
+
+        current_version = await self.ms_repository.get_version(schedule_version_id)
+        available_baseline_modes = {
+            "own": has_baseline,
+            "previous_version": False,
+            "database_baseline": False,
+        }
+        if current_version:
+            available_baseline_modes = await self._resolve_baseline_mode_metadata(
+                current_version["project_name"],
+                current_version["version_number"],
+                schedule_version_id,
+            )
+            available_baseline_modes["own"] = has_baseline
+
+        all_id_to_sitem = {
+            item["id"]: item["s_item_id"]
+            for item in parsed
+            if item.get("id") is not None
+        }
+        envelope_relationships: list[dict] = []
+        for rel in relationships:
+            pred_id = rel.get("pred_id")
+            succ_id = rel.get("succ_id")
+            if pred_id not in all_id_to_sitem or succ_id not in all_id_to_sitem:
+                continue
+            rel_type = rel.get("rel_type") or "FS"
+            envelope_relationships.append(
+                {
+                    "id": build_relationship_id(all_id_to_sitem[pred_id], all_id_to_sitem[succ_id], rel_type),
+                    "pred_id": all_id_to_sitem[pred_id],
+                    "succ_id": all_id_to_sitem[succ_id],
+                    "rel_type": rel_type,
+                    "lag_days": float(rel.get("lag_d") or 0),
+                }
+            )
+
+        visible_relationship_ids = [
+            build_relationship_id(rel["pred_id"], rel["succ_id"], rel.get("rel_type") or "FS")
+            for rel in relationships_payload
+        ]
+
+        return build_v2_gantt_payload(
+            legacy_payload=legacy_payload,
+            view_id=str(view_key),
+            view_title=str(view_key).replace("_", " ").title(),
+            project_id=current_version.get("project_name") if current_version else None,
+            schedule_version_id=schedule_version_id,
+            available_baseline_modes=available_baseline_modes,
+            selected_baseline_mode=baseline_mode,
+            envelope_activities=items_payload,
+            envelope_relationships=envelope_relationships,
+            envelope_updates=activity_updates_payload,
+            visible_activity_ids=[int(item["id"]) for item in items_payload],
+            visible_relationship_ids=visible_relationship_ids,
+        )
 
     @staticmethod
     def _map_update_logs(
@@ -680,7 +737,43 @@ class ScheduleViewService:
 
         payload = dict(payload)
         payload["activity_updates"] = updates
+        if isinstance(payload.get("data_envelope"), dict):
+            envelope = dict(payload["data_envelope"])
+            envelope["updates"] = updates
+            payload["data_envelope"] = envelope
+        if isinstance(payload.get("capabilities"), dict):
+            capabilities = dict(payload["capabilities"])
+            updates_cap = dict(capabilities.get("updates") or {})
+            updates_cap["available"] = bool(updates)
+            updates_cap.setdefault("render_enabled", True)
+            capabilities["updates"] = updates_cap
+            payload["capabilities"] = capabilities
         return payload
+
+    @staticmethod
+    def _inject_baseline_mode_metadata(payload: dict, available_baseline_modes: dict) -> dict:
+        patched = dict(payload)
+        patched["available_baseline_modes"] = available_baseline_modes
+        if isinstance(patched.get("capabilities"), dict):
+            capabilities = dict(patched["capabilities"])
+            baseline_modes = dict(capabilities.get("baseline_modes") or {})
+            baseline_modes["available"] = [
+                mode for mode, enabled in available_baseline_modes.items() if enabled
+            ]
+            selected = str(baseline_modes.get("selected") or patched.get("baseline_mode") or "own")
+            if not available_baseline_modes.get(selected, False) and available_baseline_modes.get("own", False):
+                selected = "own"
+            baseline_modes["selected"] = selected
+            capabilities["baseline_modes"] = baseline_modes
+            patched["capabilities"] = capabilities
+            patched["baseline_mode"] = selected
+        return patched
+
+    @staticmethod
+    def _normalize_available_baseline_modes(payload: dict, available_baseline_modes: dict) -> dict:
+        normalized = dict(available_baseline_modes)
+        normalized["own"] = bool(payload.get("has_baseline", normalized.get("own", False)))
+        return normalized
 
     @logfire.instrument("schedule_view_service.preload")
     async def preload(self, *, project_id: str, baseline_mode: str = "own") -> dict:
@@ -761,8 +854,14 @@ class ScheduleViewService:
 
         # Inject baseline availability metadata into default payload
         if default_payload and isinstance(default_payload, dict):
-            default_payload = dict(default_payload)
-            default_payload["available_baseline_modes"] = available_baseline_modes
+            effective_baseline_modes = self._normalize_available_baseline_modes(
+                default_payload,
+                available_baseline_modes,
+            )
+            default_payload = self._inject_baseline_mode_metadata(
+                default_payload,
+                effective_baseline_modes,
+            )
 
         return {
             "project_id": project_id,
@@ -842,8 +941,14 @@ class ScheduleViewService:
 
         # Inject baseline availability metadata
         if view_payload and isinstance(view_payload, dict):
-            view_payload = dict(view_payload)
-            view_payload["available_baseline_modes"] = available_baseline_modes
+            effective_baseline_modes = self._normalize_available_baseline_modes(
+                view_payload,
+                available_baseline_modes,
+            )
+            view_payload = self._inject_baseline_mode_metadata(
+                view_payload,
+                effective_baseline_modes,
+            )
 
         return {
             "project_id": project_id,

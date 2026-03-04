@@ -134,10 +134,83 @@ export interface ScheduleRelationship {
   is_critical?: boolean;
 }
 
+export interface GanttCapabilities {
+  links: {
+    available: boolean;
+    render_enabled: boolean;
+  };
+  updates: {
+    available: boolean;
+    render_enabled: boolean;
+  };
+  baseline_modes: {
+    available: BaselineMode[];
+    selected: BaselineMode;
+  };
+  columns: {
+    available: string[];
+    selected: string[];
+  };
+  what_if: {
+    supported: boolean;
+    active_scenario_id: string | null;
+    overlay_available: boolean;
+  };
+}
+
+export interface GanttDataEnvelope {
+  activities: ScheduleItem[];
+  relationships: Array<{
+    id: string;
+    pred_id: string;
+    succ_id: string;
+    rel_type: RelationshipType;
+    lag_days: number;
+  }>;
+  baselines: {
+    own: { activities: Array<{ id: number; s_item_id: string; start: string | null; finish: string | null; duration_d: number | null }> };
+    previous_version: { activities: Array<{ id: number; s_item_id: string; start: string | null; finish: string | null; duration_d: number | null }> };
+    database_baseline: { activities: Array<{ id: number; s_item_id: string; start: string | null; finish: string | null; duration_d: number | null }> };
+  };
+  updates: ActivityUpdate[];
+}
+
+export interface GanttDisplay {
+  filter_applied: GanttFilter;
+  visible_activity_ids: number[];
+  visible_relationship_ids: string[];
+  project_start: string;
+  project_finish: string;
+  critical_path_length: number;
+  total_activities: number;
+  filtered_activities: number;
+  preserve_order?: boolean;
+}
+
 /**
  * Complete Gantt chart data streamed from the agent
  */
 export interface GanttChartData {
+  /** Payload schema version for compatibility handling */
+  schema_version?: string;
+  /** Optional custom view metadata */
+  view?: {
+    id?: string | null;
+    title?: string;
+    grouping?: string | null;
+    source?: {
+      project_id?: number | null;
+      schedule_version_id?: number | null;
+      scenario_id?: string | null;
+    };
+  };
+  /** Explicit capability matrix (v2 payload) */
+  capabilities?: GanttCapabilities;
+  /** Full data envelope independent of display filters (v2 payload) */
+  data_envelope?: GanttDataEnvelope;
+  /** Display projection for currently visible subset (v2 payload) */
+  display?: GanttDisplay;
+
   /** List of activities to display */
   items: ScheduleItem[];
   /** Relationships between activities for dependency arrows */
