@@ -1,7 +1,7 @@
 """Base classes and dependencies for scheduling agent tools."""
 
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Any
 
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
@@ -19,6 +19,7 @@ class AgentDeps:
     Attributes:
         service: The scheduling service for P6 operations.
         vector_service: Optional vector search service for semantic search.
+        email_service: Optional email service for scheduling email tools.
         conn: Optional database connection for direct queries.
         transaction: Optional SafeP6Transaction for marking modifications.
         gantt_event_queue: Queue for gantt panel events to be streamed to frontend.
@@ -28,6 +29,7 @@ class AgentDeps:
     """
     service: SchedulingService
     vector_service: Optional[VectorService] = None
+    email_service: Optional[Any] = None
     conn: Optional[object] = None
     transaction: Optional["SafeP6Transaction"] = None
     gantt_event_queue: Optional[list] = None

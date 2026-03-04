@@ -33,6 +33,25 @@ from backend.config.settings import settings
 router = APIRouter()
 
 
+def _build_email_service():
+    if not settings.EMAIL_ENABLED:
+        return None
+
+    try:
+        from backend.email_tools import EmailRepository, EmailService
+
+        email_repository = EmailRepository()
+        return EmailService(repository=email_repository)
+    except Exception as error:
+        logfire.error(
+            "Failed to initialize email service",
+            error=str(error),
+            error_type=type(error).__name__,
+            exc_info=True,
+        )
+        return None
+
+
 # ============================================================
 # Request/Response Models
 # ============================================================
@@ -181,6 +200,7 @@ async def chat_stream(
             service = SchedulingService()
             vector_service = VectorService()
             ms_repo = MSScheduleRepository(supabase)
+            email_service = _build_email_service()
             
             # Queue for gantt panel events from tools
             gantt_event_queue: list[dict] = []
@@ -190,6 +210,7 @@ async def chat_stream(
                 deps = AgentDeps(
                     service=service,
                     vector_service=vector_service,
+                    email_service=email_service,
                     conn=conn,
                     transaction=transaction,
                     gantt_event_queue=gantt_event_queue,
@@ -398,12 +419,14 @@ async def chat_sync(
         # Run agent
         service = SchedulingService()
         vector_service = VectorService()
+        email_service = _build_email_service()
         
         with SafeP6Transaction() as transaction:
             conn = transaction.conn
             deps = AgentDeps(
                 service=service,
                 vector_service=vector_service,
+                email_service=email_service,
                 conn=conn,
                 transaction=transaction
             )

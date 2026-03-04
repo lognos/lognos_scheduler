@@ -78,6 +78,7 @@ from backend.tools.ms import (
     create_schedule_subversion_ms,
     promote_subversion_ms,
 )
+from backend.email_tools import check_email_service_health_tool
 from backend.models.io import AgentOutput
 from backend.config.settings import settings
 
@@ -233,5 +234,8 @@ scheduling_agent = Agent(
         # MS Project Version tools
         create_schedule_subversion_ms,
         promote_subversion_ms,
+
+        # Email tools (Phase 0)
+        check_email_service_health_tool,
     ],
 )

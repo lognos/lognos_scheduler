@@ -12,4 +12,11 @@ google-generativeai
 supabase
 sse-starlette
 jinja2>=3.0
+azure-identity
+msgraph-sdk
+markdown
+bleach
+google-genai
+openpyxl
+python-docx
 
