@@ -6,8 +6,6 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     UserPromptPart,
     TextPart,
-    ToolCallPart,
-    ToolReturnPart,
 )
 from pydantic_ai.settings import ModelSettings
 from backend.prompt.loader import PromptLoader
@@ -51,6 +49,8 @@ from backend.tools import (
     add_activity_ws,
     add_relationship_ws,
     modify_relationship_ws,
+    delete_relationship_ws,
+    delete_activity_ws,
     hide_gantt_ws,
     
     # Workspace activity code tools
@@ -161,81 +161,112 @@ def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
     
     return filtered
 
-# Define the Agent with structured output
-scheduling_agent = Agent(
-    settings.GOOGLE_DEFAULT_MODEL,
-    deps_type=AgentDeps,
-    output_type=AgentOutput,  # Structured output: SchedulingResponse | ClarificationRequest | ErrorResponse
-    retries=5,  # Increased retries for Gemini empty response issues
-    model_settings=ModelSettings(
-        temperature=0.3,  # Lower temperature for more consistent responses
-    ),
-    history_processors=[filter_tool_history],  # Filter tool calls from history to reduce tokens
-    system_prompt=PromptLoader.get_prompt("scheduler_system.xml.j2"),
-    tools=[
-        # P6 Query tools
-        get_activity_p6,
-        search_activities_p6,
-        list_projects_p6,
-        list_activities_p6,
-        list_activity_codes_p6,
-        get_activity_codes_p6,
-        
-        # P6 Activity tools
-        create_activity_p6,
-        update_activity_status_p6,
-        update_progress_p6,
-        
-        # P6 Relationship tools
-        create_relationship_p6,
-        update_relationship_p6,
-        delete_relationship_p6,
-        
-        # P6 Project tools
-        create_project_p6,
-        
-        # P6 Activity code tools
-        assign_activity_codes_p6,
-        remove_activity_codes_p6,
-        bulk_assign_activity_codes_p6,
-        
-        # Workspace tools
-        get_workspace_status_ws,
-        load_schedule_ws,
-        create_schedule_ws,
-        clear_schedule_ws,
-        calculate_gantt_ws,
-        modify_activity_ws,
-        add_activity_ws,
-        add_relationship_ws,
-        modify_relationship_ws,
-        hide_gantt_ws,
-        
-        # Workspace activity code tools
-        assign_activity_codes_ws,
-        bulk_assign_activity_codes_ws,
-        remove_activity_codes_ws,
-        get_activity_codes_ws,
-        
-        # Indexing tools
-        index_project,
-        
-        # MS Project (Supabase) Query tools
-        list_schedule_versions_ms,
-        get_schedule_overview_ms,
-        list_activities_ms,
-        get_activity_ms,
-        get_project_constraints_ms,
-        get_calendar_ms,
-        
-        # MS Project Workspace tools
-        load_schedule_ms,
-        
-        # MS Project Version tools
-        create_schedule_subversion_ms,
-        promote_subversion_ms,
 
-        # Email tools (Phase 0)
-        check_email_service_health_tool,
-    ],
+def _build_agent(system_prompt: str, tools: list) -> Agent:
+    return Agent(
+        settings.GOOGLE_DEFAULT_MODEL,
+        deps_type=AgentDeps,
+        output_type=AgentOutput,
+        retries=5,
+        model_settings=ModelSettings(
+            temperature=0.3,
+        ),
+        history_processors=[filter_tool_history],
+        system_prompt=system_prompt,
+        tools=tools,
+    )
+
+
+WORKSPACE_TOOLS = [
+    get_workspace_status_ws,
+    clear_schedule_ws,
+    calculate_gantt_ws,
+    modify_activity_ws,
+    add_activity_ws,
+    add_relationship_ws,
+    modify_relationship_ws,
+    delete_relationship_ws,
+    delete_activity_ws,
+    hide_gantt_ws,
+    assign_activity_codes_ws,
+    bulk_assign_activity_codes_ws,
+    remove_activity_codes_ws,
+    get_activity_codes_ws,
+]
+
+
+MSP_TOOLS = [
+    list_schedule_versions_ms,
+    get_schedule_overview_ms,
+    list_activities_ms,
+    get_activity_ms,
+    get_project_constraints_ms,
+    get_calendar_ms,
+    load_schedule_ms,
+    create_schedule_subversion_ms,
+    promote_subversion_ms,
+]
+
+
+P6_TOOLS = [
+    get_activity_p6,
+    search_activities_p6,
+    list_projects_p6,
+    list_activities_p6,
+    list_activity_codes_p6,
+    get_activity_codes_p6,
+    create_activity_p6,
+    update_activity_status_p6,
+    update_progress_p6,
+    create_relationship_p6,
+    update_relationship_p6,
+    delete_relationship_p6,
+    create_project_p6,
+    assign_activity_codes_p6,
+    remove_activity_codes_p6,
+    bulk_assign_activity_codes_p6,
+    load_schedule_ws,
+    create_schedule_ws,
+    index_project,
+]
+
+
+COMMON_TOOLS = [
+    check_email_service_health_tool,
+]
+
+
+_MSP_SYSTEM_PROMPT = PromptLoader.compose_prompts([
+    "scheduler_general.xml.j2",
+    "scheduler_msp.xml.j2",
+])
+
+_P6_SYSTEM_PROMPT = PromptLoader.compose_prompts([
+    "scheduler_general.xml.j2",
+    "scheduler_p6.xml.j2",
+])
+
+
+_msp_scheduling_agent = _build_agent(
+    system_prompt=_MSP_SYSTEM_PROMPT,
+    tools=MSP_TOOLS + WORKSPACE_TOOLS + COMMON_TOOLS,
 )
+
+_p6_scheduling_agent = _build_agent(
+    system_prompt=_P6_SYSTEM_PROMPT,
+    tools=P6_TOOLS + WORKSPACE_TOOLS + COMMON_TOOLS,
+)
+
+
+def get_scheduling_agent(project_type: str = "msp") -> Agent:
+    """Return the domain-scoped scheduling agent.
+
+    Temporary default is MSP-first.
+    """
+    if project_type.lower() == "p6":
+        return _p6_scheduling_agent
+    return _msp_scheduling_agent
+
+
+# Backward compatibility alias (defaults to MSP)
+scheduling_agent = _msp_scheduling_agent

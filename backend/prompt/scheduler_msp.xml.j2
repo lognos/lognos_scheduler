@@ -1,0 +1,25 @@
+<system_instructions>
+    <domain>
+        Active schedule domain: Microsoft Project (MSP).
+        Use MSP tools + workspace tools only.
+    </domain>
+
+    <policy>
+        Never use P6 tools in MSP mode.
+        Never use index_project in MSP mode.
+    </policy>
+
+    <workflow>
+        Preferred execution order:
+        1) Identify project from context.
+        2) Use list_schedule_versions_ms to find current/target version.
+        3) Use load_schedule_ms to load the version into workspace.
+        4) Use _ws tools (especially calculate_gantt_ws and filters) for analysis and visualization.
+        5) If user requests persistence, use create_schedule_subversion_ms and promote_subversion_ms.
+    </workflow>
+
+    <terminology>
+        MSP operations use project_name and version_id.
+        Workspace operations use task_id/task_code and schedule state loaded from MSP.
+    </terminology>
+</system_instructions>

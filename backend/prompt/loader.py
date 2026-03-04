@@ -31,3 +31,9 @@ class PromptLoader:
         """
         template = env.get_template(template_name)
         return template.render(**kwargs)
+
+    @staticmethod
+    def compose_prompts(template_names: list[str], **kwargs: Any) -> str:
+        """Load and concatenate multiple prompt templates in order."""
+        rendered_parts = [PromptLoader.get_prompt(name, **kwargs) for name in template_names]
+        return "\n\n".join(part.strip() for part in rendered_parts if part and part.strip())
