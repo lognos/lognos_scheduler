@@ -212,7 +212,7 @@ export function useAGUIStream() {
         setActiveBaselineMode(mode);
 
         // Always re-fetch with the new baseline_mode (bypass cache)
-        const viewKey = activeScheduleViewKey || 'critical_path';
+        const viewKey = activeScheduleViewKey || 'full_schedule';
         if (viewKey === 'custom') return;
 
         setIsPreloadingSchedule(true);

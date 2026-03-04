@@ -208,7 +208,7 @@ class ScheduleViewService:
                 view_key=view_key,
                 view_name=view_name,
                 view_type="system",
-                is_default=view_key == "critical_path",
+                is_default=view_key == "full_schedule",
                 config=configs[view_key],
             )
             definitions.append(definition)
@@ -846,7 +846,7 @@ class ScheduleViewService:
         return {
             "project_id": project_id,
             "schedule_version_id": schedule_version_id,
-            "default_view_key": "critical_path",
+            "default_view_key": "full_schedule",
             "views": views,
             "payload": default_payload,
         }
