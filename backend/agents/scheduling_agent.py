@@ -6,6 +6,8 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     UserPromptPart,
     TextPart,
+    ToolCallPart,
+    ToolReturnPart,
 )
 from pydantic_ai.settings import ModelSettings
 from backend.prompt.loader import PromptLoader
@@ -41,6 +43,7 @@ from backend.tools import (
     
     # Workspace tools
     get_workspace_status_ws,
+    get_driving_path_ws,
     load_schedule_ws,
     create_schedule_ws,
     clear_schedule_ws,
@@ -58,6 +61,10 @@ from backend.tools import (
     bulk_assign_activity_codes_ws,
     remove_activity_codes_ws,
     get_activity_codes_ws,
+    
+    # What-if baseline tools
+    snapshot_baseline_ws,
+    get_whatif_comparison_ws,
     
     # Indexing tools
     index_project,
@@ -108,6 +115,9 @@ def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
     
     The current turn's tool calls are preserved because they're part of the active
     agent run and are needed for the agentic loop to work correctly.
+    
+    Additionally, detects repeated identical tool calls in the current run and
+    injects a stop signal to prevent infinite loops.
     
     This is critical because:
     1. Tool returns (e.g., list_activities_p6) can be thousands of tokens
@@ -168,6 +178,73 @@ def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
         else:
             # Keep any other message types as-is
             filtered.append(msg)
+
+    # ---- Loop guard: detect repeated identical tool calls in current run ----
+    # Count (tool_name, args_str) occurrences across current-run ModelResponse messages
+    MAX_IDENTICAL_CALLS = 2
+    call_counts: dict[tuple[str, str], int] = {}
+    for msg in filtered:
+        if not (hasattr(msg, 'run_id') and msg.run_id == current_run_id):
+            continue
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    key = (part.tool_name, part.args_as_json_str())
+                    call_counts[key] = call_counts.get(key, 0) + 1
+
+    # If any tool was called > MAX_IDENTICAL_CALLS with identical args, inject a
+    # warning into the latest ToolReturnPart(s) for that tool so the model sees
+    # "STOP: you already called this tool N times with the same arguments"
+    repeated_tools = {k for k, v in call_counts.items() if v > MAX_IDENTICAL_CALLS}
+    if repeated_tools:
+        # Walk filtered in reverse to find the latest ToolReturnPart for
+        # each repeated tool and prepend a stop warning to its content
+        patched_return_keys: set[tuple[str, str]] = set()
+        for i in range(len(filtered) - 1, -1, -1):
+            msg = filtered[i]
+            if not isinstance(msg, ModelRequest):
+                continue
+            if not (hasattr(msg, 'run_id') and msg.run_id == current_run_id):
+                continue
+            new_parts = []
+            for part in msg.parts:
+                if (
+                    isinstance(part, ToolReturnPart)
+                    and hasattr(part, 'tool_name')
+                ):
+                    # Identify which call this return belongs to by
+                    # matching tool_name against repeated set
+                    for rk in repeated_tools:
+                        if rk[0] == part.tool_name and rk not in patched_return_keys:
+                            # Inject stop signal
+                            warning = (
+                                f"STOP REPEATING: You have called {part.tool_name} "
+                                f"{call_counts[rk]} times with identical arguments and "
+                                "received the same result each time. This tool cannot "
+                                "fulfill this request differently. You MUST now respond "
+                                "to the user with the information you have, or explain "
+                                "that this operation is not currently supported. Do NOT "
+                                "call this tool again with the same arguments."
+                            )
+                            original = part.model_response_str() if hasattr(part, 'model_response_str') else str(part.content if hasattr(part, 'content') else '')
+                            patched = ToolReturnPart(
+                                tool_name=part.tool_name,
+                                content=f"{warning}\n\nOriginal result: {original}",
+                                tool_call_id=part.tool_call_id if hasattr(part, 'tool_call_id') else None,
+                            )
+                            new_parts.append(patched)
+                            patched_return_keys.add(rk)
+                            break
+                    else:
+                        new_parts.append(part)
+                else:
+                    new_parts.append(part)
+            if new_parts != list(msg.parts):
+                filtered[i] = ModelRequest(
+                    parts=new_parts,
+                    instructions=msg.instructions,
+                    run_id=msg.run_id,
+                )
     
     return filtered
 
@@ -188,6 +265,7 @@ def _build_agent(system_prompt: str, tools: list) -> Agent:
 
 WORKSPACE_TOOLS = [
     get_workspace_status_ws,
+    get_driving_path_ws,
     clear_schedule_ws,
     calculate_gantt_ws,
     modify_activity_ws,
@@ -201,6 +279,9 @@ WORKSPACE_TOOLS = [
     bulk_assign_activity_codes_ws,
     remove_activity_codes_ws,
     get_activity_codes_ws,
+    # What-if baseline tools
+    snapshot_baseline_ws,
+    get_whatif_comparison_ws,
 ]
 
 

@@ -18,6 +18,28 @@
         5) If user requests persistence, use create_schedule_subversion_ms and promote_subversion_ms.
     </workflow>
 
+    <what_if_workflow>
+        For what-if / scenario / baseline comparison requests in MSP mode:
+        1) load_schedule_ms to load the target version.
+        2) calculate_gantt_ws to compute dates.
+        3) snapshot_baseline_ws to freeze as baseline.
+        4) Apply requested changes via modify_activity_ws / add_activity_ws / etc.
+        5) calculate_gantt_ws to recalculate and display with baseline ghost bars.
+        6) get_whatif_comparison_ws to produce a structured delta report.
+        If the user asks to "include the same as baseline" or "show before/after",
+        this is the correct workflow. Do NOT use baseline_mode in render_options;
+        use snapshot_baseline_ws instead.
+    </what_if_workflow>
+
+    <driving_path>
+        When asked for the path/predecessors/driving chain to an activity in MSP mode:
+        1) load_schedule_ms to load the version.
+        2) calculate_gantt_ws to compute CPM dates.
+        3) get_driving_path_ws with the target task_id.
+        The tool will trace predecessors and render a filtered Gantt automatically.
+        Do NOT attempt to find predecessors by repeatedly filtering calculate_gantt_ws.
+    </driving_path>
+
     <terminology>
         MSP operations use project_name and version_id.
         Workspace operations use task_id/task_code and schedule state loaded from MSP.

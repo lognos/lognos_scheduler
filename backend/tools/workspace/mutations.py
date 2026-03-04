@@ -25,6 +25,8 @@ from backend.models.io import (
     BulkAssignActivityCodesWsRequest,
     RemoveActivityCodesWsRequest,
     GetActivityCodesWsRequest,
+    SnapshotBaselineWsRequest,
+    WhatIfComparisonWsRequest,
 )
 
 
@@ -1678,3 +1680,224 @@ async def delete_activity_ws(
     except Exception as e:
         logfire.error("Error in delete_activity_ws", error=str(e))
         return f"Error deleting activity: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# What-If Baseline Tools
+# ---------------------------------------------------------------------------
+
+
+async def snapshot_baseline_ws(
+    ctx: RunContext[AgentDeps],
+    req: SnapshotBaselineWsRequest,
+) -> str:
+    """Snapshot the current calculated schedule dates as the baseline reference.
+
+    Call this AFTER calculate_gantt_ws so that early_start / early_finish
+    values exist. The snapshot is stored in-memory and written into the
+    activities DataFrame as baseline_start / baseline_finish /
+    baseline_duration_d.  Subsequent calculate_gantt_ws calls will
+    automatically render baseline ghost bars on every activity.
+
+    Typical what-if workflow:
+    1. load_schedule_ms (or load_schedule_ws)
+    2. calculate_gantt_ws          -> see current plan
+    3. snapshot_baseline_ws        -> freeze dates as baseline
+    4. modify_activity_ws (one or more changes)
+    5. calculate_gantt_ws          -> see updated plan WITH baseline bars
+    6. get_whatif_comparison_ws    -> structured delta report
+
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        req: Label for the baseline snapshot
+
+    Returns:
+        Confirmation message with activity count and baseline label
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ms first."
+
+        if workspace.activities_df.empty:
+            return "Schedule workspace is empty. Load a schedule first."
+
+        if 'early_start' not in workspace.activities_df.columns:
+            return (
+                "No calculated dates found. "
+                "Run calculate_gantt_ws before snapshotting a baseline."
+            )
+
+        snapshot = workspace.snapshot_as_baseline(label=req.label)
+        count = len(snapshot.activities)
+
+        logfire.info(
+            "Baseline snapshot created",
+            conversation_id=conversation_id,
+            label=req.label,
+            activity_count=count,
+        )
+
+        return (
+            f"Baseline '{req.label}' saved for {count} activities. "
+            "Make your changes, then run calculate_gantt_ws to see baseline ghost bars, "
+            "or get_whatif_comparison_ws for a structured delta report."
+        )
+
+    except ValueError as ve:
+        return str(ve)
+    except Exception as e:
+        logfire.error("Error in snapshot_baseline_ws", error=str(e))
+        return f"Error creating baseline snapshot: {str(e)}"
+
+
+async def get_whatif_comparison_ws(
+    ctx: RunContext[AgentDeps],
+    req: WhatIfComparisonWsRequest,
+) -> str:
+    """Compare current calculated dates against the stored baseline snapshot.
+
+    Returns a structured text report listing activities whose start or
+    finish dates shifted compared to the baseline snapshot. Activities can
+    be filtered by shift threshold (days) and critical-path membership.
+
+    Prerequisite: snapshot_baseline_ws must have been called earlier in the
+    conversation, AND calculate_gantt_ws must have been run after making
+    changes.
+
+    Args:
+        ctx: Runtime context with conversation_id in deps
+        req: Comparison filters (threshold_days, critical_only)
+
+    Returns:
+        Multi-line comparison report summarizing schedule deltas
+    """
+    try:
+        conversation_id = ctx.deps.conversation_id
+        workspace = schedule_state_manager.get(conversation_id)
+
+        if not workspace:
+            return "No schedule workspace active. Use load_schedule_ms first."
+
+        if workspace.baseline_snapshot is None:
+            return (
+                "No baseline snapshot exists. "
+                "Run snapshot_baseline_ws first to freeze a reference point."
+            )
+
+        if 'early_start' not in workspace.activities_df.columns:
+            return (
+                "No calculated dates in workspace. "
+                "Run calculate_gantt_ws after making changes."
+            )
+
+        baseline_df = workspace.baseline_snapshot.activities.copy()
+        current_df = workspace.activities_df[
+            ['task_id', 'task_code', 'task_name', 'early_start', 'early_finish', 'is_critical']
+        ].copy()
+
+        merged = current_df.merge(
+            baseline_df, on='task_id', how='inner', suffixes=('', '_bl'),
+        )
+
+        if merged.empty:
+            return "No matching activities between current schedule and baseline."
+
+        # Calculate deltas in days
+        merged['start_delta_days'] = merged.apply(
+            lambda r: (r['early_start'] - r['baseline_start']).days
+            if pd.notna(r['early_start']) and pd.notna(r['baseline_start'])
+            else None,
+            axis=1,
+        )
+        merged['finish_delta_days'] = merged.apply(
+            lambda r: (r['early_finish'] - r['baseline_finish']).days
+            if pd.notna(r['early_finish']) and pd.notna(r['baseline_finish'])
+            else None,
+            axis=1,
+        )
+
+        # Apply filters
+        if req.critical_only:
+            merged = merged[merged['is_critical'] == True]  # noqa: E712
+
+        if req.threshold_days > 0:
+            mask = (
+                (merged['start_delta_days'].abs() > req.threshold_days) |
+                (merged['finish_delta_days'].abs() > req.threshold_days)
+            )
+            merged = merged[mask]
+
+        if merged.empty:
+            return (
+                f"No activities shifted more than {req.threshold_days} day(s) "
+                f"{'on the critical path ' if req.critical_only else ''}"
+                "compared to baseline."
+            )
+
+        # Build report
+        delayed = merged[merged['finish_delta_days'] > 0]
+        accelerated = merged[merged['finish_delta_days'] < 0]
+        unchanged = merged[merged['finish_delta_days'] == 0]
+
+        lines: list[str] = []
+        lines.append(
+            f"What-If Comparison vs '{workspace.baseline_snapshot.label}' "
+            f"(snapshot at {workspace.baseline_snapshot.snapshot_at.strftime('%H:%M')})"
+        )
+        lines.append(
+            f"Total compared: {len(merged)} | "
+            f"Delayed: {len(delayed)} | "
+            f"Accelerated: {len(accelerated)} | "
+            f"Unchanged: {len(unchanged)}"
+        )
+
+        # Overall project impact
+        max_finish_delta = merged['finish_delta_days'].max()
+        min_finish_delta = merged['finish_delta_days'].min()
+        if pd.notna(max_finish_delta) and max_finish_delta > 0:
+            lines.append(f"Max delay: +{int(max_finish_delta)} day(s)")
+        if pd.notna(min_finish_delta) and min_finish_delta < 0:
+            lines.append(f"Max acceleration: {int(min_finish_delta)} day(s)")
+
+        lines.append("")
+
+        # Detail top shifted activities (limit to 15 for readability)
+        sorted_df = merged.reindex(
+            merged['finish_delta_days'].abs().sort_values(ascending=False).index
+        )
+        detail_rows = sorted_df.head(15)
+
+        for _, row in detail_rows.iterrows():
+            code = row.get('task_code', '')
+            name = row.get('task_name', '')
+            s_delta = int(row['start_delta_days']) if pd.notna(row['start_delta_days']) else 0
+            f_delta = int(row['finish_delta_days']) if pd.notna(row['finish_delta_days']) else 0
+            crit = " [CRITICAL]" if row.get('is_critical') else ""
+            sign_s = f"+{s_delta}" if s_delta > 0 else str(s_delta)
+            sign_f = f"+{f_delta}" if f_delta > 0 else str(f_delta)
+            lines.append(
+                f"  {code} {name}: start {sign_s}d, finish {sign_f}d{crit}"
+            )
+
+        if len(sorted_df) > 15:
+            lines.append(f"  ... and {len(sorted_df) - 15} more activities")
+
+        report = "\n".join(lines)
+
+        logfire.info(
+            "What-if comparison generated",
+            conversation_id=conversation_id,
+            compared=len(merged),
+            delayed=len(delayed),
+            accelerated=len(accelerated),
+            threshold_days=req.threshold_days,
+        )
+
+        return report
+
+    except Exception as e:
+        logfire.error("Error in get_whatif_comparison_ws", error=str(e))
+        return f"Error generating comparison: {str(e)}"

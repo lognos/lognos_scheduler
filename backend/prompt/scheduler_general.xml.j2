@@ -20,7 +20,31 @@
     <workspace>
         Workspace (_ws) tools operate on an in-memory schedule state for analysis and what-if operations.
         Prefer workspace analysis for Gantt visualization, filtering, and impact explanations.
+
+        For predecessor/driving path requests (e.g. "show me the path to activity X",
+        "what drives activity X", "what needs to happen before X"), use get_driving_path_ws.
+        This tool traces backward through the relationship graph automatically and renders
+        a filtered Gantt chart. Do NOT attempt to manually trace predecessors by calling
+        calculate_gantt_ws with search filters.
     </workspace>
+
+    <what_if_analysis>
+        What-if analysis lets users compare a modified schedule against a frozen baseline.
+        Follow this workflow when the user asks to compare scenarios, see impact, or do what-if:
+
+        1) Load the schedule and run calculate_gantt_ws to show the current plan.
+        2) Call snapshot_baseline_ws to freeze the current dates as baseline.
+           - Use a descriptive label (e.g. "Current Plan", "Before delay").
+        3) Make the requested modifications (modify_activity_ws, add_activity_ws, etc.).
+        4) Run calculate_gantt_ws again. The Gantt will now show baseline ghost bars automatically.
+        5) Optionally call get_whatif_comparison_ws for a structured text delta report.
+
+        Key rules:
+        - Always snapshot BEFORE making changes, never after.
+        - If the user says "show baseline" or "compare with original", this workflow applies.
+        - One snapshot per conversation; re-snapshotting overwrites the previous baseline.
+        - The baseline persists across recalculations until the workspace is cleared.
+    </what_if_analysis>
 
     <clarifications>
         If key information is missing, return a ClarificationRequest with a direct question and concise options.

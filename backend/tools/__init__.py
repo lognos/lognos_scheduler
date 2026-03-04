@@ -53,6 +53,7 @@ from backend.tools.p6.activity_codes import (
 # Workspace tools (queries)
 from backend.tools.workspace.queries import (
     get_workspace_status_ws,
+    get_driving_path_ws,
 )
 
 # Workspace tools (mutations)
@@ -73,6 +74,9 @@ from backend.tools.workspace.mutations import (
     bulk_assign_activity_codes_ws,
     remove_activity_codes_ws,
     get_activity_codes_ws,
+    # What-if baseline tools
+    snapshot_baseline_ws,
+    get_whatif_comparison_ws,
 )
 
 # Indexing tools
@@ -117,6 +121,7 @@ __all__ = [
     
     # Workspace tools
     "get_workspace_status_ws",
+    "get_driving_path_ws",
     "load_schedule_ws",
     "create_schedule_ws",
     "clear_schedule_ws",
@@ -133,6 +138,9 @@ __all__ = [
     "bulk_assign_activity_codes_ws",
     "remove_activity_codes_ws",
     "get_activity_codes_ws",
+    # What-if baseline tools
+    "snapshot_baseline_ws",
+    "get_whatif_comparison_ws",
     
     # Indexing tools
     "index_project",

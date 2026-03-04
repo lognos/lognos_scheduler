@@ -449,6 +449,44 @@ class CalculateGanttWsRequest(BaseModel):
     )
 
 
+class SnapshotBaselineWsRequest(BaseModel):
+    """Request to snapshot the current calculated dates as baseline for what-if comparison."""
+    model_config = ConfigDict(strict=True)
+
+    label: str = Field(
+        default="Baseline",
+        description="Human-readable label for the baseline snapshot (e.g. 'Current Plan', 'Before adding crane')"
+    )
+
+
+class WhatIfComparisonWsRequest(BaseModel):
+    """Request to compare current calculated schedule against the stored baseline snapshot."""
+    model_config = ConfigDict(strict=True)
+
+    threshold_days: int = Field(
+        default=0,
+        ge=0,
+        description="Only return activities whose start or finish shifted by more than this many days. 0 returns all."
+    )
+    critical_only: bool = Field(
+        default=False,
+        description="If true, only compare activities on the current critical path."
+    )
+
+
+class GetDrivingPathWsRequest(BaseModel):
+    """Request to find the driving path (predecessor chain) to a target activity."""
+    model_config = ConfigDict(strict=True)
+
+    target_task_id: int = Field(
+        ...,
+        description="Task ID of the target activity to trace the driving path to."
+    )
+    render_gantt: bool = Field(
+        default=True,
+        description="If true, automatically render a Gantt chart filtered to only the driving path activities."
+    )
+
 
 class ModifyActivityWsRequest(BaseModel):
     """Request to modify an activity in the workspace."""

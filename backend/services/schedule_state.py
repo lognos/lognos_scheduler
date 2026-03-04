@@ -19,6 +19,20 @@ import logfire
 
 
 @dataclass
+class BaselineSnapshot:
+    """Point-in-time snapshot of calculated schedule dates used as a baseline reference.
+
+    Created by snapshot_baseline_ws after a CPM calculation, these dates are
+    written back into the workspace DataFrame as baseline_start / baseline_finish /
+    baseline_duration_d so that subsequent calculate_gantt_ws calls can render
+    baseline ghost bars without any external data source.
+    """
+    snapshot_at: datetime
+    label: str  # Human-readable label, e.g. "Current Plan" or "Before adding crane"
+    activities: pd.DataFrame  # Columns: task_id, baseline_start, baseline_finish, baseline_duration_d
+
+
+@dataclass
 class ScheduleWorkspace:
     """
     In-memory working state for a schedule being edited.
@@ -62,10 +76,56 @@ class ScheduleWorkspace:
     calendar_exceptions: list[date] = field(default_factory=list)
     critical_path_ids: list[int] = field(default_factory=list)
     
+    # What-if baseline snapshot (populated by snapshot_baseline_ws)
+    baseline_snapshot: Optional[BaselineSnapshot] = None
+    
     def mark_modified(self) -> None:
         """Mark workspace as modified (needs recalculation/save)."""
         self.is_modified = True
         self.updated_at = datetime.now()
+    
+    def snapshot_as_baseline(self, label: str = "Baseline") -> BaselineSnapshot:
+        """Capture current calculated dates as the baseline reference.
+
+        Copies early_start / early_finish into baseline_start / baseline_finish
+        on the activities DataFrame so calculate_gantt_ws renders ghost bars.
+
+        Raises ValueError if no calculation has been run yet.
+        """
+        if 'early_start' not in self.activities_df.columns:
+            raise ValueError(
+                "No calculated dates in workspace. "
+                "Run calculate_gantt_ws before snapshotting a baseline."
+            )
+
+        hours_per_day = 8.0
+        snapshot_df = self.activities_df[['task_id', 'early_start', 'early_finish', 'target_drtn_hr_cnt']].copy()
+        snapshot_df = snapshot_df.rename(columns={
+            'early_start': 'baseline_start',
+            'early_finish': 'baseline_finish',
+        })
+        snapshot_df['baseline_duration_d'] = (
+            snapshot_df['target_drtn_hr_cnt'].fillna(0) / hours_per_day
+        )
+        snapshot_df = snapshot_df.drop(columns=['target_drtn_hr_cnt'])
+
+        snapshot = BaselineSnapshot(
+            snapshot_at=datetime.now(),
+            label=label,
+            activities=snapshot_df,
+        )
+        self.baseline_snapshot = snapshot
+
+        # Write baseline columns back into activities_df so gantt builder picks them up
+        self.activities_df = self.activities_df.drop(
+            columns=['baseline_start', 'baseline_finish', 'baseline_duration_d'],
+            errors='ignore',
+        )
+        self.activities_df = self.activities_df.merge(
+            snapshot_df, on='task_id', how='left',
+        )
+        self.updated_at = datetime.now()
+        return snapshot
     
     def update_from_calculation(
         self,
@@ -535,6 +595,11 @@ class ScheduleStateManager:
             for date_col in ['target_start_date', 'target_end_date', 'original_start', 'original_finish', 'act_start_date', 'act_end_date']:
                 if date_col in activities_df.columns:
                     activities_df[date_col] = activities_df[date_col].apply(parse_date)
+            
+            # Parse baseline date columns (populated when DB version has a baseline)
+            for bl_col in ['baseline_start', 'baseline_finish']:
+                if bl_col in activities_df.columns:
+                    activities_df[bl_col] = activities_df[bl_col].apply(parse_date)
             
             # Ensure required columns exist
             required_cols = [
