@@ -45,6 +45,10 @@ export interface GanttUpdateIndicatorStyle {
   size: number;
   /** Background color for the indicator circle */
   bg: string;
+  /** Border color for the indicator circle */
+  borderColor: string;
+  /** Border width for the indicator circle */
+  borderWidth: string;
   /** Text color for the "!" symbol */
   textColor: string;
   /** Font size for the "!" symbol */
@@ -69,9 +73,34 @@ export interface GanttUpdateIndicatorStyle {
   legendTextColor: string;
 }
 
+export interface GanttBaselineUpdateIndicatorStyle {
+  /** Indicator circle diameter in px */
+  size: number;
+  /** Background color for the indicator circle (light gray) */
+  bg: string;
+  /** Border color for the indicator circle */
+  borderColor: string;
+  /** Border width for the indicator circle */
+  borderWidth: string;
+  /** Text color for the "!" symbol */
+  textColor: string;
+  /** Font size for the "!" symbol */
+  fontSize: string;
+  /** Font weight for the "!" */
+  fontWeight: string;
+
+  /** Tooltip max width */
+  tooltipMaxWidth: number;
+
+  /** Legend swatch color */
+  legendBg: string;
+  legendTextColor: string;
+}
+
 export interface GanttStyleSettings {
   baseline: GanttBaselineStyle;
   updates: GanttUpdateIndicatorStyle;
+  baselineUpdates: GanttBaselineUpdateIndicatorStyle;
 }
 
 const ganttStyleSettings: Readonly<GanttStyleSettings> = Object.freeze({
@@ -94,7 +123,9 @@ const ganttStyleSettings: Readonly<GanttStyleSettings> = Object.freeze({
   },
   updates: {
     size: 16,
-    bg: 'rgb(217, 119, 6)',
+    bg: 'rgba(217, 119, 6, 0.12)',
+    borderColor: 'rgb(217, 119, 6)',
+    borderWidth: '1px',
     textColor: 'rgb(255, 255, 255)',
     fontSize: '10px',
     fontWeight: '700',
@@ -109,6 +140,20 @@ const ganttStyleSettings: Readonly<GanttStyleSettings> = Object.freeze({
     },
 
     legendBg: 'rgb(217, 119, 6)',
+    legendTextColor: 'rgb(255, 255, 255)',
+  },
+  baselineUpdates: {
+    size: 16,
+    bg: 'rgba(156, 163, 175, 0.12)',
+    borderColor: 'rgb(156, 163, 175)',
+    borderWidth: '1px',
+    textColor: 'rgb(255, 255, 255)',
+    fontSize: '10px',
+    fontWeight: '700',
+
+    tooltipMaxWidth: 320,
+
+    legendBg: 'rgb(156, 163, 175)',
     legendTextColor: 'rgb(255, 255, 255)',
   },
 });

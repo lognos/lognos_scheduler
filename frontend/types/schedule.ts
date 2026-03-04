@@ -31,6 +31,8 @@ export interface ScheduleItem {
   wbs_path: string;
   /** Activity status: not_started, in_progress, completed */
   status: 'not_started' | 'in_progress' | 'completed';
+  /** Physical percent complete (0-100), when available */
+  percent_complete?: number;
 
   // Baseline fields (MS Project schedules)
   /** Baseline start date (ISO format), null if no baseline set */
@@ -176,6 +178,9 @@ export interface GanttChartData {
 
   /** User-reported activity updates for indicator display */
   activity_updates?: ActivityUpdate[];
+
+  /** Update logs from the selected baseline version (cross-version mode only) */
+  baseline_activity_updates?: ActivityUpdate[];
 }
 
 /**

@@ -9,8 +9,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, isValid, parseISO, differenceInDays } from 'date-fns';
-import { X, Calendar, Filter, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
-import { GanttChartData, GanttFilter, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate, BaselineMode } from '@/types/schedule';
+import { X, Calendar, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
+import { GanttChartData, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate, BaselineMode } from '@/types/schedule';
 import {
   useTimeline,
   useBarPositions,
@@ -57,6 +57,111 @@ function formatProjectDate(value?: string): string {
   return format(parsed, 'MMM d, yyyy');
 }
 
+const ROW_HEIGHT_PX = 36;
+const BASE_ACTIVITY_COLUMN_WIDTH = 192;
+const OPTIONAL_COLUMN_WIDTH = 108;
+
+type OptionalColumnKey = 'start' | 'finish' | 'float' | 'progress';
+
+interface OptionalColumnOption {
+  key: OptionalColumnKey;
+  label: string;
+}
+
+const OPTIONAL_COLUMN_OPTIONS: OptionalColumnOption[] = [
+  { key: 'start', label: 'Start' },
+  { key: 'finish', label: 'Finish' },
+  { key: 'float', label: 'Float' },
+  { key: 'progress', label: 'Complete (%)' },
+];
+
+function formatOptionalColumnValue(item: PositionedItem, column: OptionalColumnKey): string {
+  switch (column) {
+    case 'start':
+      return formatProjectDate(item.start);
+    case 'finish':
+      return formatProjectDate(item.finish);
+    case 'float':
+      return `${item.total_float.toFixed(1)}d`;
+    case 'progress': {
+      if (item.is_summary) {
+        return '—';
+      }
+
+      if (typeof item.percent_complete === 'number' && Number.isFinite(item.percent_complete)) {
+        return `${Math.round(item.percent_complete)}%`;
+      }
+
+      if (item.status === 'completed') {
+        return '100%';
+      }
+
+      if (item.status === 'not_started') {
+        return '0%';
+      }
+
+      return '—';
+    }
+    default:
+      return '—';
+  }
+}
+
+interface SummaryContextMeta {
+  ancestorSummaryIndicesByIndex: number[][];
+  summaryEndIndexByIndex: Map<number, number>;
+}
+
+function buildSummaryContextMeta(items: PositionedItem[]): SummaryContextMeta {
+  const ancestorSummaryIndicesByIndex: number[][] = Array.from({ length: items.length }, () => []);
+  const summaryEndIndexByIndex = new Map<number, number>();
+  const summaryStack: Array<{ index: number; level: number }> = [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const level = item.level ?? (item.is_summary ? 1 : 2);
+
+    while (summaryStack.length > 0 && level <= summaryStack[summaryStack.length - 1].level) {
+      const completedSummary = summaryStack.pop();
+      if (completedSummary) {
+        summaryEndIndexByIndex.set(completedSummary.index, index - 1);
+      }
+    }
+
+    ancestorSummaryIndicesByIndex[index] = summaryStack.map((entry) => entry.index);
+
+    if (item.is_summary) {
+      summaryStack.push({ index, level });
+    }
+  }
+
+  while (summaryStack.length > 0) {
+    const completedSummary = summaryStack.pop();
+    if (completedSummary) {
+      summaryEndIndexByIndex.set(completedSummary.index, items.length - 1);
+    }
+  }
+
+  return {
+    ancestorSummaryIndicesByIndex,
+    summaryEndIndexByIndex,
+  };
+}
+
+function areSetsEqual(first: Set<string>, second: Set<string>): boolean {
+  if (first.size !== second.size) {
+    return false;
+  }
+
+  for (const value of first) {
+    if (!second.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export const GanttPanel: React.FC<GanttPanelProps> = ({
   data,
   onClose,
@@ -75,8 +180,32 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   const [showUpdates, setShowUpdates] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [activityColumnWidth, setActivityColumnWidth] = useState<number>(192);
+  const [activityColumnWidth, setActivityColumnWidth] = useState<number>(BASE_ACTIVITY_COLUMN_WIDTH);
+  const [visibleColumns, setVisibleColumns] = useState<OptionalColumnKey[]>([]);
   const [collapsedSummaryKeys, setCollapsedSummaryKeys] = useState<Set<string>>(new Set());
+
+  const activityColumnMinWidth = useMemo(
+    () => BASE_ACTIVITY_COLUMN_WIDTH + (visibleColumns.length * OPTIONAL_COLUMN_WIDTH),
+    [visibleColumns.length]
+  );
+
+  useEffect(() => {
+    setActivityColumnWidth((previous) => Math.max(previous, activityColumnMinWidth));
+  }, [activityColumnMinWidth]);
+
+  const toggleVisibleColumn = (column: OptionalColumnKey) => {
+    setVisibleColumns((previous) => {
+      if (previous.includes(column)) {
+        return previous.filter((current) => current !== column);
+      }
+
+      const ordered = OPTIONAL_COLUMN_OPTIONS
+        .map((option) => option.key)
+        .filter((key) => previous.includes(key) || key === column);
+
+      return ordered;
+    });
+  };
 
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
@@ -89,7 +218,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
 
       const columnDragState = columnDragStateRef.current;
       if (columnDragState) {
-        const minWidth = 140;
+        const minWidth = activityColumnMinWidth;
         const maxWidth = Math.max(minWidth, width - 320);
         const delta = event.clientX - columnDragState.startX;
         const nextWidth = columnDragState.startWidth + delta;
@@ -113,7 +242,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
       document.body.style.removeProperty('user-select');
       document.body.style.removeProperty('cursor');
     };
-  }, [onWidthChange]);
+  }, [onWidthChange, width, activityColumnMinWidth]);
 
   const startResize = (event: React.MouseEvent<HTMLDivElement>) => {
     dragStateRef.current = {
@@ -160,6 +289,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   });
 
   const updatesMap = useActivityUpdates(data.activity_updates);
+  const baselineUpdatesMap = useActivityUpdates(data.baseline_activity_updates);
 
   const collapsibleSummaryKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -203,7 +333,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
     setCollapsedSummaryKeys(new Set(collapsibleSummaryKeys));
   };
 
-  const collapseLevel2Summaries = () => {
+  const level2CollapsibleSummaryKeys = useMemo(() => {
     const level2Keys = new Set<string>();
 
     for (const item of positionedItems) {
@@ -217,7 +347,11 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
       }
     }
 
-    setCollapsedSummaryKeys(level2Keys);
+    return level2Keys;
+  }, [positionedItems, collapsibleSummaryKeys]);
+
+  const collapseLevel2Summaries = () => {
+    setCollapsedSummaryKeys(new Set(level2CollapsibleSummaryKeys));
   };
 
   const expandAllSummaries = () => {
@@ -226,6 +360,10 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
 
   const hasCollapsibleSummaries = collapsibleSummaryKeys.size > 0;
   const hasCollapsedSummaries = collapsedSummaryKeys.size > 0;
+  const isCollapseAllState = hasCollapsibleSummaries && collapsedSummaryKeys.size === collapsibleSummaryKeys.size;
+  const isLevel2State = level2CollapsibleSummaryKeys.size > 0 && areSetsEqual(collapsedSummaryKeys, level2CollapsibleSummaryKeys);
+  const isExpandAllState = collapsedSummaryKeys.size === 0;
+  const relationships = data.relationships ?? [];
   const activeView = activeViewKey
     ? availableViews.find((view) => view.view_key === activeViewKey)
     : null;
@@ -279,16 +417,61 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
     ]
   );
 
-  // Build active filter description
-  const filterDescription = useFilterDescription(data.filter_applied);
-
   // Virtualization for large datasets
   const rowVirtualizer = useVirtualizer({
     count: visibleItems.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 36, // row height in px
+    estimateSize: () => ROW_HEIGHT_PX, // row height in px
     overscan: 10, // render 10 extra rows above/below viewport for smooth scrolling
   });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const scrollTop = parentRef.current?.scrollTop ?? 0;
+
+  const summaryContextMeta = useMemo(() => buildSummaryContextMeta(visibleItems), [visibleItems]);
+
+  const stickySummaryIndices = useMemo(() => {
+    if (visibleItems.length === 0) {
+      return [];
+    }
+    const stickyAncestors: number[] = [];
+
+    for (let slot = 0; slot < visibleItems.length; slot += 1) {
+      const probeY = scrollTop + (slot * ROW_HEIGHT_PX);
+      const probeIndex = Math.min(Math.floor(probeY / ROW_HEIGHT_PX), visibleItems.length - 1);
+      const probeItem = visibleItems[probeIndex];
+      const probeAncestors = summaryContextMeta.ancestorSummaryIndicesByIndex[probeIndex] ?? [];
+      const probePath = probeItem?.is_summary ? [...probeAncestors, probeIndex] : probeAncestors;
+
+      if (probePath.length <= slot) {
+        break;
+      }
+
+      const summaryIndex = probePath[slot];
+      const endIndex = summaryContextMeta.summaryEndIndexByIndex.get(summaryIndex);
+      if (endIndex === undefined || probeIndex > endIndex) {
+        break;
+      }
+
+      const summaryTop = summaryIndex * ROW_HEIGHT_PX;
+      const freezeThreshold = scrollTop + (slot * ROW_HEIGHT_PX);
+
+      if (summaryTop < freezeThreshold) {
+        stickyAncestors.push(summaryIndex);
+      } else {
+        break;
+      }
+    }
+
+    return stickyAncestors;
+  }, [visibleItems, summaryContextMeta, scrollTop]);
+
+  const stickySummaryItems = useMemo(
+    () => stickySummaryIndices.map((summaryIndex) => visibleItems[summaryIndex]).filter(Boolean),
+    [stickySummaryIndices, visibleItems]
+  );
+
+  const stickyStackHeight = stickySummaryItems.length * ROW_HEIGHT_PX;
 
   return (
     <div
@@ -301,7 +484,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         aria-hidden="true"
       />
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-800/50 rounded-t-xl">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-[#0d1117] rounded-t-xl">
         <div className="flex items-center gap-4">
           <Calendar className="h-5 w-5 text-blue-400" />
           <h2 className="text-lg font-light text-white">Schedule</h2>
@@ -318,8 +501,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         </div>
       </div>
 
-      {(availableViews.length > 0 || isViewLoading || hasCollapsibleSummaries) && (
-        <div className="px-4 py-2 bg-dark-800/20 border-b border-dark-700 text-xs flex items-center justify-between gap-3">
+      <div className="relative z-40 px-4 py-2 bg-[#0d1117] border-b border-dark-700 text-xs flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             {availableViews.length > 0 && (
               <div className="relative group">
@@ -332,7 +514,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                   {activeView ? activeView.view_name : 'View'}
                 </button>
 
-                <div className="absolute left-0 top-full mt-1 min-w-40 rounded-md border border-dark-600 bg-[#111827] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-30">
+                <div className="absolute left-0 top-full mt-1 min-w-40 rounded-md border border-dark-600 bg-[#0d1117] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-50">
                   {availableViews.map((view, index) => {
                     const isActive = activeViewKey === view.view_key;
                     return (
@@ -347,6 +529,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                             : 'text-gray-200 hover:bg-dark-700/70'
                         } ${index === 0 ? 'rounded-t-md' : ''} ${index === availableViews.length - 1 ? 'rounded-b-md' : ''}`}
                       >
+                          <span className="mr-2">{isActive ? '●' : '○'}</span>
                         {view.view_name}
                       </button>
                     );
@@ -354,6 +537,37 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                 </div>
               </div>
             )}
+
+            <div className="relative group">
+              <button
+                type="button"
+                className="px-2.5 py-1 rounded-full border transition-colors border-dark-600 text-gray-300 hover:bg-dark-700/60"
+                title="Visible columns"
+              >
+                Show
+              </button>
+
+              <div className="absolute left-0 top-full mt-1 min-w-44 rounded-md border border-dark-600 bg-[#0d1117] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-50">
+                {OPTIONAL_COLUMN_OPTIONS.map((column, index) => {
+                  const isActive = visibleColumns.includes(column.key);
+                  return (
+                    <button
+                      key={column.key}
+                      type="button"
+                      onClick={() => toggleVisibleColumn(column.key)}
+                      className={`w-full text-left px-3 py-2 text-xs transition-colors ${
+                        isActive
+                          ? 'text-blue-300 bg-blue-500/10'
+                          : 'text-gray-200 hover:bg-dark-700/70'
+                      } ${index === 0 ? 'rounded-t-md' : ''} ${index === OPTIONAL_COLUMN_OPTIONS.length - 1 ? 'rounded-b-md' : ''}`}
+                    >
+                      <span className="mr-2">{isActive ? '●' : '○'}</span>
+                      {column.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -367,13 +581,14 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                   Collapse
                 </button>
 
-                <div className="absolute right-0 top-full mt-1 w-36 rounded-md border border-dark-600 bg-[#111827] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-30">
+                <div className="absolute right-0 top-full mt-1 w-36 rounded-md border border-dark-600 bg-[#0d1117] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-50">
                   <button
                     type="button"
                     onClick={collapseAllSummaries}
                     className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-dark-700/70 rounded-t-md disabled:text-gray-600 disabled:hover:bg-transparent"
                     disabled={collapsedSummaryKeys.size === collapsibleSummaryKeys.size}
                   >
+                    <span className="mr-2">{isCollapseAllState ? '●' : '○'}</span>
                     Collapse all
                   </button>
                   <button
@@ -382,6 +597,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                     className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-dark-700/70 disabled:text-gray-600 disabled:hover:bg-transparent"
                     disabled={!hasLevel2CollapsibleSummaries}
                   >
+                    <span className="mr-2">{isLevel2State ? '●' : '○'}</span>
                     Level 2
                   </button>
                   <button
@@ -390,13 +606,14 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                     className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-dark-700/70 rounded-b-md disabled:text-gray-600 disabled:hover:bg-transparent"
                     disabled={!hasCollapsedSummaries}
                   >
+                    <span className="mr-2">{isExpandAllState ? '●' : '○'}</span>
                     Expand all
                   </button>
                 </div>
               </div>
             )}
 
-            {data.relationships && data.relationships.length > 0 && (
+            {relationships.length > 0 && (
               <button
                 type="button"
                 onClick={() => setShowLinks((previous) => !previous)}
@@ -427,7 +644,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                   {baselineMode === 'own' ? 'Baseline' : baselineMode === 'previous_version' ? 'Baseline (Prev)' : 'Baseline (DB)'}
                 </button>
 
-                <div className="absolute left-0 top-full mt-1 min-w-48 rounded-md border border-dark-600 bg-[#111827] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-30">
+                <div className="absolute left-0 top-full mt-1 min-w-48 rounded-md border border-dark-600 bg-[#0d1117] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-50">
                   {([
                     { mode: 'own' as BaselineMode, label: 'Own Baseline', available: true },
                     { mode: 'previous_version' as BaselineMode, label: `Previous Version${data.baseline_mode === 'previous_version' && data.baseline_label ? ` (${data.baseline_label})` : ''}`, available: data.available_baseline_modes?.previous_version ?? false },
@@ -464,7 +681,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                 onClick={() => setShowUpdates((previous) => !previous)}
                 className={`h-[26px] px-2 rounded-full border flex items-center gap-1 text-xs transition-colors ${
                   showUpdates
-                    ? 'border-amber-500 text-amber-300 bg-amber-500/10 hover:bg-amber-500/20'
+                    ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
                     : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
                 }`}
                 title={showUpdates ? 'Hide updates' : 'Show updates'}
@@ -476,15 +693,6 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
             {isViewLoading && <span className="text-gray-500">Loading view...</span>}
           </div>
         </div>
-      )}
-
-      {/* Filter indicator */}
-      {filterDescription && (
-        <div className="px-4 py-2 bg-blue-900/20 border-b border-dark-700 text-xs text-blue-300 flex items-center gap-2">
-          <Filter className="h-3 w-3" />
-          <span>{filterDescription}</span>
-        </div>
-      )}
 
       {/* Gantt chart content */}
       <div className="flex-1 flex flex-col overflow-hidden p-4">
@@ -509,6 +717,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                 months={timeline.months}
                 yearGroups={timeline.yearGroups}
                 activityColumnWidth={activityColumnWidth}
+                visibleColumns={visibleColumns}
               />
             </div>
 
@@ -521,8 +730,44 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                   position: 'relative',
                 }}
               >
+                {stickySummaryItems.length > 0 && (
+                  <div
+                    className="sticky top-0 z-30"
+                    style={{ height: `${stickyStackHeight}px` }}
+                  >
+                    {stickySummaryItems.map((item, index) => {
+                      const summaryKey = getSummaryKey(item);
+                      const canCollapse = item.is_summary === true && collapsibleSummaryKeys.has(summaryKey);
+                      const isCollapsed = canCollapse && collapsedSummaryKeys.has(summaryKey);
+
+                      return (
+                        <div
+                          key={`sticky-${item.id}-${index}`}
+                          className="absolute left-0 right-0"
+                          style={{
+                            top: `${index * ROW_HEIGHT_PX}px`,
+                            height: `${ROW_HEIGHT_PX}px`,
+                          }}
+                        >
+                          <HierarchicalRow
+                            item={item}
+                            activityColumnWidth={activityColumnWidth}
+                            visibleColumns={visibleColumns}
+                            canCollapse={canCollapse}
+                            isCollapsed={isCollapsed}
+                            onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
+                            showBaseline={showBaseline && !!data.has_baseline}
+                            activityUpdates={showUpdates ? updatesMap.byActivity.get(item.s_item_id) : undefined}
+                            baselineActivityUpdates={showUpdates ? baselineUpdatesMap.byActivity.get(item.s_item_id) : undefined}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {/* Activity rows */}
-                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                {virtualRows.map((virtualRow) => {
                   const item = visibleItems[virtualRow.index];
                   const summaryKey = getSummaryKey(item);
                   const canCollapse = item.is_summary === true && collapsibleSummaryKeys.has(summaryKey);
@@ -543,18 +788,20 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                       <HierarchicalRow
                         item={item}
                         activityColumnWidth={activityColumnWidth}
+                        visibleColumns={visibleColumns}
                         canCollapse={canCollapse}
                         isCollapsed={isCollapsed}
                         onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
                         showBaseline={showBaseline && !!data.has_baseline}
                         activityUpdates={showUpdates ? updatesMap.byActivity.get(item.s_item_id) : undefined}
+                        baselineActivityUpdates={showUpdates ? baselineUpdatesMap.byActivity.get(item.s_item_id) : undefined}
                       />
                     </div>
                   );
                 })}
 
                 {/* Relationship arrows overlay - positioned over timeline area only */}
-                {data.relationships && data.relationships.length > 0 && showLinks && (
+                {relationships.length > 0 && showLinks && (
                   <div 
                     className="absolute top-0 bottom-0"
                     style={{ 
@@ -564,8 +811,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                   >
                     <RelationshipArrows
                       items={visibleItems}
-                      relationships={data.relationships}
-                      rowHeight={36}
+                      relationships={relationships}
+                      rowHeight={ROW_HEIGHT_PX}
                       showCriticalOnly={false}
                       totalHeight={rowVirtualizer.getTotalSize()}
                     />
@@ -580,13 +827,14 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
       {/* Legend */}
       <Legend
         grouping={data.grouping}
-        hasRelationships={!!data.relationships && data.relationships.length > 0}
+        hasRelationships={relationships.length > 0}
         hasBaseline={!!data.has_baseline}
         showBaseline={showBaseline}
         baselineMode={baselineMode}
         baselineLabel={data.baseline_label}
         hasUpdates={updatesMap.hasUpdates}
         showUpdates={showUpdates}
+        hasBaselineUpdates={baselineUpdatesMap.hasUpdates}
       />
     </div>
   );
@@ -598,6 +846,7 @@ interface TimelineHeaderProps {
   months: TimelineMonth[];
   yearGroups: YearGroup[];
   activityColumnWidth: number;
+  visibleColumns: OptionalColumnKey[];
 }
 
 interface HeaderMetaItem {
@@ -621,7 +870,12 @@ function HeaderMeta({ items }: HeaderMetaProps) {
   );
 }
 
-function TimelineHeader({ months, yearGroups, activityColumnWidth }: TimelineHeaderProps) {
+function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumns }: TimelineHeaderProps) {
+  const activityNameColumnWidth = Math.max(
+    BASE_ACTIVITY_COLUMN_WIDTH,
+    activityColumnWidth - (visibleColumns.length * OPTIONAL_COLUMN_WIDTH)
+  );
+
   return (
     <div className="mb-4">
       {/* Year row */}
@@ -641,11 +895,23 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth }: TimelineHea
       </div>
       {/* Month row */}
       <div className="flex border-b border-dark-600 pb-2">
-        <div
-          className="shrink-0 text-xs font-medium text-gray-400"
-          style={{ width: `${activityColumnWidth}px` }}
-        >
-          Activity
+        <div className="shrink-0 flex items-center text-xs font-medium text-gray-400" style={{ width: `${activityColumnWidth}px` }}>
+          <div className="truncate pr-2" style={{ width: `${activityNameColumnWidth}px` }}>
+            Activity
+          </div>
+          {visibleColumns.map((columnKey) => {
+            const label = OPTIONAL_COLUMN_OPTIONS.find((option) => option.key === columnKey)?.label ?? columnKey;
+            return (
+              <div
+                key={columnKey}
+                className="truncate px-2 text-right"
+                style={{ width: `${OPTIONAL_COLUMN_WIDTH}px` }}
+                title={label}
+              >
+                {label}
+              </div>
+            );
+          })}
         </div>
         <div className="flex-1 flex text-xs text-gray-400">
           {months.map((month, index) => (
@@ -665,21 +931,25 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth }: TimelineHea
 interface HierarchicalRowProps {
   item: PositionedItem;
   activityColumnWidth: number;
+  visibleColumns: OptionalColumnKey[];
   canCollapse: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   showBaseline: boolean;
   activityUpdates?: ActivityUpdate[];
+  baselineActivityUpdates?: ActivityUpdate[];
 }
 
 function HierarchicalRow({
   item,
   activityColumnWidth,
+  visibleColumns,
   canCollapse,
   isCollapsed,
   onToggleCollapse,
   showBaseline,
   activityUpdates,
+  baselineActivityUpdates,
 }: HierarchicalRowProps) {
   const isSummary = item.is_summary === true;
   const isMilestone = !isSummary && (item.working_days === 0 || item.calendar_days === 0);
@@ -687,54 +957,61 @@ function HierarchicalRow({
   const indentPx = indentLevel * 16;
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
+  const bus = ganttStyleSettings.baselineUpdates;
   const hasBaseline = item.baselineStartPercentage !== undefined && item.baselineWidthPercentage !== undefined;
+  const activityNameColumnWidth = Math.max(
+    BASE_ACTIVITY_COLUMN_WIDTH,
+    activityColumnWidth - (visibleColumns.length * OPTIONAL_COLUMN_WIDTH)
+  );
 
   return (
-    <div className={`flex items-center group h-full ${isSummary ? 'bg-dark-700/30' : ''}`}>
+    <div className={`flex items-center group h-full ${isSummary ? 'bg-[#0d1117]' : ''}`}>
       {/* Activity label with indentation */}
-      <div
-        className="shrink-0 pr-2 flex items-center"
-        style={{ width: `${activityColumnWidth}px`, paddingLeft: `${indentPx}px` }}
-      >
-        {isSummary ? (
-          <button
-            type="button"
-            onClick={onToggleCollapse}
-            disabled={!canCollapse}
-            className={`mr-1 h-4 w-4 flex items-center justify-center rounded transition-colors ${
-              canCollapse ? 'text-gray-300 hover:bg-dark-700 hover:text-white' : 'text-gray-600'
-            }`}
-            aria-label={isCollapsed ? 'Expand summary' : 'Collapse summary'}
-            title={isCollapsed ? 'Expand' : 'Collapse'}
-          >
-            {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          </button>
-        ) : (
-          <span className="mr-1 h-4 w-4 shrink-0" aria-hidden="true"></span>
-        )}
-        {isSummary && (
-          <span
-            className="text-xs text-yellow-500 mr-1"
-            title={`${item.children_count} activities`}
-          >
-            [{item.children_count}]
-          </span>
-        )}
-        <div className="flex-1 min-w-0">
-          <div
-            className={`text-xs truncate ${
-              isSummary ? 'font-semibold text-yellow-400' : 'font-medium text-white'
-            }`}
-            title={item.s_item}
-          >
-            {item.s_item}
+      <div className="shrink-0 pr-2 flex items-center" style={{ width: `${activityColumnWidth}px` }}>
+        <div className="flex items-center min-w-0" style={{ width: `${activityNameColumnWidth}px`, paddingLeft: `${indentPx}px` }}>
+          {isSummary ? (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              disabled={!canCollapse}
+              className={`mr-1 h-4 w-4 flex items-center justify-center rounded transition-colors ${
+                canCollapse ? 'text-gray-300 hover:bg-dark-700 hover:text-white' : 'text-gray-600'
+              }`}
+              aria-label={isCollapsed ? 'Expand summary' : 'Collapse summary'}
+              title={isCollapsed ? 'Expand' : 'Collapse'}
+            >
+              {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </button>
+          ) : (
+            <span className="mr-1 h-4 w-4 shrink-0" aria-hidden="true"></span>
+          )}
+          <div className="flex-1 min-w-0">
+            <div
+              className={`text-xs truncate ${
+                isSummary ? 'font-semibold text-white' : 'font-medium text-white'
+              }`}
+              title={item.s_item}
+            >
+              {item.s_item}
+            </div>
+            <div className={`text-xs ${isSummary ? 'text-white/80' : 'text-gray-500'}`}>{item.s_item_id}</div>
           </div>
-          <div className="text-xs text-gray-500">{item.s_item_id}</div>
         </div>
+
+        {visibleColumns.map((columnKey) => (
+          <div
+            key={`${item.id}-${columnKey}`}
+            className="shrink-0 px-2 text-xs text-gray-300 text-right truncate"
+            style={{ width: `${OPTIONAL_COLUMN_WIDTH}px` }}
+            title={formatOptionalColumnValue(item, columnKey)}
+          >
+            {formatOptionalColumnValue(item, columnKey)}
+          </div>
+        ))}
       </div>
 
       {/* Timeline bar container */}
-      <div className="flex-1 relative h-7 rounded bg-dark-800/30">
+      <div className="flex-1 relative h-7 rounded bg-transparent">
         {isMilestone ? (
           <div
             className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rotate-45 transition-all duration-200 group-hover:opacity-80 shadow-lg ${getBarClasses(
@@ -826,6 +1103,9 @@ function HierarchicalRow({
                 width: `${us.size}px`,
                 height: `${us.size}px`,
                 backgroundColor: us.bg,
+                borderWidth: us.borderWidth,
+                borderStyle: 'solid',
+                borderColor: us.borderColor,
                 color: us.textColor,
                 fontSize: us.fontSize,
                 fontWeight: us.fontWeight,
@@ -836,6 +1116,41 @@ function HierarchicalRow({
             <UpdateTooltip updates={activityUpdates} />
           </div>
         )}
+
+        {/* Baseline update indicator (light gray) */}
+        {baselineActivityUpdates && baselineActivityUpdates.length > 0 && (
+          <div
+            className="group/blupdate absolute"
+            style={{
+              left: isMilestone
+                ? `${item.startPercentage}%`
+                : `${item.startPercentage + item.widthPercentage}%`,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              marginLeft: activityUpdates && activityUpdates.length > 0
+                ? `${4 + us.size + 2}px`
+                : '4px',
+            }}
+          >
+            <div
+              className="rounded-full flex items-center justify-center cursor-default"
+              style={{
+                width: `${bus.size}px`,
+                height: `${bus.size}px`,
+                backgroundColor: bus.bg,
+                borderWidth: bus.borderWidth,
+                borderStyle: 'solid',
+                borderColor: bus.borderColor,
+                color: bus.textColor,
+                fontSize: bus.fontSize,
+                fontWeight: bus.fontWeight,
+              }}
+            >
+              !
+            </div>
+            <UpdateTooltip updates={baselineActivityUpdates} label="Baseline" />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -843,22 +1158,28 @@ function HierarchicalRow({
 
 interface UpdateTooltipProps {
   updates: ActivityUpdate[];
+  /** Optional label prefix, e.g. "Baseline" for baseline version updates */
+  label?: string;
 }
 
-function UpdateTooltip({ updates }: UpdateTooltipProps) {
+function UpdateTooltip({ updates, label }: UpdateTooltipProps) {
   const us = ganttStyleSettings.updates;
+
+  // Tailwind JIT requires full static class strings — dynamic interpolation won't work.
+  const hoverClasses = label
+    ? 'group-hover/blupdate:opacity-100 group-hover/blupdate:visible group-hover/blupdate:pointer-events-auto'
+    : 'group-hover/update:opacity-100 group-hover/update:visible group-hover/update:pointer-events-auto';
 
   return (
     <div
-      className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 invisible
-                 group-hover/update:opacity-100 group-hover/update:visible
+      className={`absolute left-1/2 -translate-x-1/2 bottom-full mb-2 opacity-0 invisible
                  transition-all duration-150 z-50 pointer-events-none
-                 group-hover/update:pointer-events-auto"
+                 ${hoverClasses}`}
       style={{ width: `${us.tooltipMaxWidth}px` }}
     >
       <div className="bg-[#1a1f2e] border border-dark-600 rounded-lg shadow-xl p-3 text-xs">
         <div className="text-gray-300 font-medium mb-2">
-          {updates.length} Update{updates.length !== 1 ? 's' : ''}
+          {label ? `${label}: ` : ''}{updates.length} Update{updates.length !== 1 ? 's' : ''}
         </div>
 
         <div className="space-y-2 max-h-[240px] overflow-y-auto">
@@ -971,14 +1292,16 @@ interface LegendProps {
   baselineLabel?: string | null;
   hasUpdates?: boolean;
   showUpdates?: boolean;
+  hasBaselineUpdates?: boolean;
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
+  const bus = ganttStyleSettings.baselineUpdates;
 
   return (
-    <div className="px-4 py-2 border-t border-dark-700 bg-dark-800/30 text-xs rounded-b-xl">
+    <div className="px-4 py-2 border-t border-dark-700 bg-[#0d1117] text-xs rounded-b-xl">
       <div className="flex items-center gap-4 text-gray-400 flex-wrap">
         {grouping && (
           <div className="flex items-center gap-1">
@@ -1055,6 +1378,23 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
             </div>
           </>
         )}
+        {hasBaselineUpdates && showUpdates && (
+          <>
+            <div className="w-px h-3 bg-dark-600 mx-1"></div>
+            <div className="flex items-center gap-1">
+              <div
+                className="w-3 h-3 rounded-full flex items-center justify-center text-[8px] font-bold"
+                style={{
+                  backgroundColor: bus.legendBg,
+                  color: bus.legendTextColor,
+                }}
+              >
+                !
+              </div>
+              <span>Baseline Update</span>
+            </div>
+          </>
+        )}
       </div>
       {grouping && <div className="mt-1 text-gray-500">Grouped by: {grouping}</div>}
     </div>
@@ -1062,23 +1402,3 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
 }
 
 // --- Hooks ---
-
-function useFilterDescription(filter: GanttFilter): string | null {
-  return useMemo(() => {
-    const parts: string[] = [];
-
-    if (filter.activity_codes) {
-      Object.entries(filter.activity_codes).forEach(([type, values]) => {
-        parts.push(`${type}: ${values.join(', ')}`);
-      });
-    }
-    if (filter.wbs_path) parts.push(`WBS: ${filter.wbs_path}`);
-    if (filter.critical_only) parts.push('Critical Path Only');
-    if (filter.status && filter.status.length > 0) {
-      parts.push(`Status: ${filter.status.join(', ')}`);
-    }
-    if (filter.search_term) parts.push(`Search: "${filter.search_term}"`);
-
-    return parts.length > 0 ? parts.join(' | ') : null;
-  }, [filter]);
-}

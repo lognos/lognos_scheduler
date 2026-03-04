@@ -99,17 +99,23 @@ class ScheduleViewService:
 
     async def _build_cross_version_baseline(
         self, reference_version_id: int,
-    ) -> dict[str, tuple]:
+    ) -> tuple[dict[str, tuple], dict[int, dict]]:
         """Build ms_uid -> (start_dt, finish_dt, duration_d) map from a reference version.
 
         Args:
             reference_version_id: PK of the reference schedule_versions row.
+
+        Returns:
+            Tuple of (baseline lookup, activity_by_id map for the reference version).
         """
         ref_activities = await self.ms_repository.get_activities_by_version(
             version_id=reference_version_id,
             limit=5000,
             include_summary=True,
         )
+        ref_activity_by_id: dict[int, dict] = {
+            a["id"]: a for a in ref_activities if a.get("id") is not None
+        }
         lookup: dict[str, tuple] = {}
         for a in ref_activities:
             ms_uid = a.get("ms_uid")
@@ -120,7 +126,7 @@ class ScheduleViewService:
             finish_dt = self._normalize_datetime(a.get("finish"))
             dur = float(a.get("duration_d") or 0) if a.get("duration_d") is not None else None
             lookup[key] = (start_dt, finish_dt, dur)
-        return lookup
+        return lookup, ref_activity_by_id
 
     async def _resolve_baseline_mode_metadata(
         self, project_name: str, current_version_number: int, current_version_id: int,
@@ -256,6 +262,7 @@ class ScheduleViewService:
                     "working_days": float(a.get("duration_d") or 0),
                     "calendar_days": self._duration_days(start_dt, finish_dt),
                     "total_float": float(a.get("total_float_d") or 0),
+                    "percent_complete": float(a.get("percent_complete") or 0),
                     "status": self._activity_status(a),
                     "is_summary": bool(a.get("is_summary", False)),
                     "is_critical": self._is_critical(a),
@@ -268,6 +275,8 @@ class ScheduleViewService:
 
         # --- Cross-version baseline overlay ---
         baseline_label: Optional[str] = None
+        _ref_version_id: Optional[int] = None
+        _ref_activity_by_id: dict[int, dict] = {}
         if baseline_mode in ("previous_version", "database_baseline"):
             current_version = await self.ms_repository.get_version(schedule_version_id)
             ref_version = None
@@ -282,7 +291,9 @@ class ScheduleViewService:
                 )
 
             if ref_version:
-                cross_baseline = await self._build_cross_version_baseline(ref_version["id"])
+                cross_baseline, ref_act_map = await self._build_cross_version_baseline(ref_version["id"])
+                _ref_version_id = ref_version["id"]
+                _ref_activity_by_id = ref_act_map
                 baseline_label = ref_version.get("version_name") or str(ref_version.get("version_number", ""))
                 for item in parsed:
                     ref = cross_baseline.get(item["s_item_id"])
@@ -443,6 +454,7 @@ class ScheduleViewService:
                 "is_critical": item["is_critical"],
                 "wbs_path": item["wbs"],
                 "status": item["status"],
+                "percent_complete": item.get("percent_complete"),
                 "level": item["level"],
                 "is_summary": item["is_summary"],
                 "parent_id": parent_id_for(item),
@@ -514,6 +526,19 @@ class ScheduleViewService:
             filtered_id_set=filtered_id_set,
         )
 
+        # Fetch update logs for the reference version (cross-version mode only)
+        baseline_activity_updates: list[dict] = []
+        if _ref_version_id is not None:
+            ref_update_logs = await self.ms_repository.get_update_logs_by_version(
+                _ref_version_id,
+            )
+            visible_sitem_ids = {item["s_item_id"] for item in filtered_items}
+            baseline_activity_updates = self._map_baseline_update_logs(
+                ref_update_logs,
+                ref_activity_by_id=_ref_activity_by_id,
+                visible_sitem_ids=visible_sitem_ids,
+            )
+
         return {
             "items": items_payload,
             "relationships": relationships_payload,
@@ -538,6 +563,7 @@ class ScheduleViewService:
             "baseline_mode": baseline_mode,
             "baseline_label": baseline_label,
             "activity_updates": activity_updates_payload,
+            "baseline_activity_updates": baseline_activity_updates,
         }
 
     @staticmethod
@@ -564,6 +590,42 @@ class ScheduleViewService:
             if int(activity_id) not in filtered_id_set:
                 continue
             s_item_id = str(activity.get("ms_uid") or activity_id)
+            result.append(
+                {
+                    "log_id": log["log_id"],
+                    "s_item_id": s_item_id,
+                    "update_type": log["update_type"],
+                    "details": log["details"],
+                    "reported_value": log.get("reported_value"),
+                    "reported_by": log["reported_by"],
+                    "reported_at": log["reported_at"],
+                    "processed": log["processed"],
+                }
+            )
+        return result
+
+    @staticmethod
+    def _map_baseline_update_logs(
+        update_logs: list[dict],
+        *,
+        ref_activity_by_id: dict[int, dict],
+        visible_sitem_ids: set[str],
+    ) -> list[dict]:
+        """Map update logs from a reference version to ``s_item_id`` format.
+
+        Filters to only include activities visible in the current view.
+        """
+        result: list[dict] = []
+        for log in update_logs:
+            activity_id = log.get("activity_id")
+            if activity_id is None:
+                continue
+            activity = ref_activity_by_id.get(activity_id)
+            if activity is None:
+                continue
+            s_item_id = str(activity.get("ms_uid") or activity_id)
+            if s_item_id not in visible_sitem_ids:
+                continue
             result.append(
                 {
                     "log_id": log["log_id"],
