@@ -49,6 +49,42 @@ class Project(BaseModel):
     created_at: Optional[str] = None
 
 
+class UserContext(BaseModel):
+    """Resolved user context from lognos_comm.users."""
+    model_config = ConfigDict(strict=True)
+
+    email: str
+    full_name: Optional[str] = None
+    first_name: Optional[str] = None
+    role: Optional[str] = None
+    app_role: Optional[str] = None
+    department: Optional[str] = None
+    reports_to: Optional[str] = None
+    active: bool = True
+    current_project_id: Optional[str] = None
+
+
+class TeamMemberContext(BaseModel):
+    """Project team member context resolved from users and user_project_access."""
+    model_config = ConfigDict(strict=True)
+
+    email: str
+    full_name: Optional[str] = None
+    first_name: Optional[str] = None
+    role: Optional[str] = None
+    app_role: Optional[str] = None
+    department: Optional[str] = None
+    reports_to: Optional[str] = None
+    active: bool = True
+    project_id: Optional[str] = None
+    access_level: Optional[str] = None
+    project_role: Optional[str] = None
+    project_reports_to: Optional[str] = None
+    can_own_risks: Optional[bool] = None
+    can_review_risks: Optional[bool] = None
+    project_purview: Optional[dict] = None
+
+
 # ============================================================
 # Conversation Domain Models
 # ============================================================

@@ -80,6 +80,11 @@ from backend.tools.indexing.operations import (
     index_project,
 )
 
+# Context tools
+from backend.tools.context import (
+    get_team_data,
+)
+
 __all__ = [
     # Base
     "AgentDeps",
@@ -131,4 +136,7 @@ __all__ = [
     
     # Indexing tools
     "index_project",
+
+    # Context tools
+    "get_team_data",
 ]

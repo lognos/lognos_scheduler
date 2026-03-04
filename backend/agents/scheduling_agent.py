@@ -61,6 +61,9 @@ from backend.tools import (
     
     # Indexing tools
     index_project,
+
+    # Context tools
+    get_team_data,
 )
 from backend.tools.ms import (
     # MS Query tools
@@ -238,6 +241,7 @@ P6_TOOLS = [
 
 
 COMMON_TOOLS = [
+    get_team_data,
     check_email_service_health_tool,
 ]
 

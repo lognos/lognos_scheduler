@@ -27,6 +27,8 @@ from backend.utils.supabase_client import get_supabase
 from backend.repositories.conversation_repository import ConversationRepository
 from backend.repositories.p6_schedule_repository import P6ScheduleRepository
 from backend.repositories.ms_schedule_repository import MSScheduleRepository
+from backend.repositories.user_context_repository import UserContextRepository
+from backend.models.domain import UserContext
 from backend.models.io import SchedulingResponse, ClarificationRequest, ErrorResponse
 from backend.config.settings import settings
 
@@ -50,6 +52,25 @@ def _build_email_service():
             exc_info=True,
         )
         return None
+
+
+async def _resolve_user_context(
+    user_repo: UserContextRepository,
+    sender_email: str,
+    project_id: Optional[str],
+) -> UserContext:
+    """Resolve request user context from lognos_comm.users with safe fallback."""
+    try:
+        return await user_repo.get_user_context(sender_email, project_id=project_id)
+    except Exception as error:
+        logfire.error(
+            "Failed to resolve user context",
+            sender_email=sender_email,
+            project_id=project_id,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+        return UserContext(email=sender_email, current_project_id=project_id)
 
 
 # ============================================================
@@ -135,6 +156,7 @@ async def chat_stream(
         supabase = get_supabase()
         conv_repo = ConversationRepository(supabase)
         p6_repo = P6ScheduleRepository(supabase)
+        user_ctx_repo = UserContextRepository(supabase)
         
         conversation_id = req.conversation_id or str(uuid4())
         
@@ -188,6 +210,19 @@ async def chat_stream(
                 context_parts.append(f"P6 Project ID: {p6_proj_id}")
             if lognos_project_id:
                 context_parts.append(f"Lognos Project: {lognos_project_id}")
+
+            user_context = await _resolve_user_context(
+                user_repo=user_ctx_repo,
+                sender_email=req.sender_email,
+                project_id=lognos_project_id,
+            )
+            user_display = user_context.full_name or user_context.first_name or user_context.email
+            user_identity = f"User: {user_display} <{user_context.email}>"
+            if user_context.role:
+                user_identity += f", role={user_context.role}"
+            if user_context.app_role:
+                user_identity += f", app_role={user_context.app_role}"
+            context_parts.append(user_identity)
             
             # Build the user message with context
             user_message = req.message
@@ -227,6 +262,8 @@ async def chat_stream(
                     conversation_id=conversation_id,
                     ms_repository=ms_repo,
                     supabase_client=supabase,
+                    user_context=user_context,
+                    user_context_repository=user_ctx_repo,
                 )
                 
                 with logfire.span(
@@ -380,6 +417,7 @@ async def chat_sync(
     supabase = get_supabase()
     conv_repo = ConversationRepository(supabase)
     p6_repo = P6ScheduleRepository(supabase)
+    user_ctx_repo = UserContextRepository(supabase)
     
     conversation_id = req.conversation_id or str(uuid4())
     
@@ -418,6 +456,19 @@ async def chat_sync(
             context_parts.append(f"P6 Project ID: {p6_proj_id}")
         if lognos_project_id:
             context_parts.append(f"Lognos Project: {lognos_project_id}")
+
+        user_context = await _resolve_user_context(
+            user_repo=user_ctx_repo,
+            sender_email=req.sender_email,
+            project_id=lognos_project_id,
+        )
+        user_display = user_context.full_name or user_context.first_name or user_context.email
+        user_identity = f"User: {user_display} <{user_context.email}>"
+        if user_context.role:
+            user_identity += f", role={user_context.role}"
+        if user_context.app_role:
+            user_identity += f", app_role={user_context.app_role}"
+        context_parts.append(user_identity)
         
         user_message = req.message
         if context_parts:
@@ -444,7 +495,12 @@ async def chat_sync(
                 vector_service=vector_service,
                 email_service=email_service,
                 conn=conn,
-                transaction=transaction
+                transaction=transaction,
+                conversation_id=conversation_id,
+                ms_repository=MSScheduleRepository(supabase),
+                supabase_client=supabase,
+                user_context=user_context,
+                user_context_repository=user_ctx_repo,
             )
             
             with logfire.span("agent_run_sync", message=req.message, project_type=project_type, p6_proj_id=p6_proj_id):
