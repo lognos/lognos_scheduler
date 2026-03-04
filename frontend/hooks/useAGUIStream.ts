@@ -271,6 +271,7 @@ export function useAGUIStream() {
                     message: content,
                     sender_email: user?.email || 'anonymous@lognos.io',
                     conversation_id: conversationIdRef.current,
+                    project_type: 'msp',
                 }),
                 signal: abortControllerRef.current.signal,
             });

@@ -18,7 +18,7 @@ from pydantic_ai.messages import (
 )
 import logfire
 
-from backend.agents.scheduling_agent import get_scheduling_agent, SCHEDULING_USAGE_LIMITS
+from backend.agents.scheduling_agent import scheduling_agent, SCHEDULING_USAGE_LIMITS
 from backend.tools._base import AgentDeps
 from backend.services.scheduling_service import SchedulingService
 from backend.services.vector_service import VectorService
@@ -63,7 +63,6 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     sender_email: str = Field(..., min_length=1)
     conversation_id: Optional[str] = None
-    project_type: str = Field(default="msp", min_length=1)
     p6_schedule_id: Optional[str] = None  # Specific P6 schedule to use
 
 
@@ -141,13 +140,10 @@ async def chat_stream(
         try:
             # Signal start
             yield sse_node_event("Initializing", "working", "Setting up context")
-
-            project_type = req.project_type.lower()
-            agent = get_scheduling_agent(project_type)
             
             # Resolve P6 project ID
             p6_proj_id = None
-            if lognos_project_id and project_type == "p6":
+            if lognos_project_id:
                 p6_proj_id = await p6_repo.resolve_p6_proj_id(
                     lognos_project_id,
                     req.p6_schedule_id
@@ -155,11 +151,6 @@ async def chat_stream(
                 yield sse_reasoning_event(
                     "Initializing",
                     f"Using P6 project {p6_proj_id}" if p6_proj_id else "No P6 schedule linked"
-                )
-            elif lognos_project_id and project_type != "p6":
-                yield sse_reasoning_event(
-                    "Initializing",
-                    f"Using MSP schedule source for project {lognos_project_id}"
                 )
             
             # Create or verify conversation exists
@@ -183,7 +174,6 @@ async def chat_stream(
             
             # Build context message for agent
             context_parts = []
-            context_parts.append(f"Project Type: {project_type.upper()}")
             if p6_proj_id:
                 context_parts.append(f"P6 Project ID: {p6_proj_id}")
             if lognos_project_id:
@@ -233,7 +223,6 @@ async def chat_stream(
                     "agent_run_stream",
                     message=req.message,
                     conversation_id=conversation_id,
-                    project_type=project_type,
                     p6_proj_id=p6_proj_id,
                     history_length=len(message_history),
                 ):
@@ -245,7 +234,7 @@ async def chat_stream(
                         try:
                             # Run the agent (non-streaming for structured output)
                             # Note: stream_text() cannot be used with output_type
-                            result = await agent.run(
+                            result = await scheduling_agent.run(
                                 user_message,
                                 deps=deps,
                                 message_history=message_history,
@@ -384,12 +373,9 @@ async def chat_sync(
     conversation_id = req.conversation_id or str(uuid4())
     
     try:
-        project_type = req.project_type.lower()
-        agent = get_scheduling_agent(project_type)
-
         # Resolve P6 project ID
         p6_proj_id = None
-        if lognos_project_id and project_type == "p6":
+        if lognos_project_id:
             p6_proj_id = await p6_repo.resolve_p6_proj_id(
                 lognos_project_id,
                 req.p6_schedule_id
@@ -413,11 +399,9 @@ async def chat_sync(
         )
         
         # Build context
-        context_parts = [f"Project Type: {project_type.upper()}"]
+        context_parts = []
         if p6_proj_id:
             context_parts.append(f"P6 Project ID: {p6_proj_id}")
-        if lognos_project_id:
-            context_parts.append(f"Lognos Project: {lognos_project_id}")
         
         user_message = req.message
         if context_parts:
@@ -447,9 +431,9 @@ async def chat_sync(
                 transaction=transaction
             )
             
-            with logfire.span("agent_run_sync", message=req.message, project_type=project_type, p6_proj_id=p6_proj_id):
+            with logfire.span("agent_run_sync", message=req.message, p6_proj_id=p6_proj_id):
                 with capture_run_messages() as messages:
-                    result = await agent.run(
+                    result = await scheduling_agent.run(
                         user_message,
                         deps=deps,
                         message_history=message_history,

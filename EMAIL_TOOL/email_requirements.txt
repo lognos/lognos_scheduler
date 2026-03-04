@@ -1,0 +1,28 @@
+# Email tool dependencies for EMAIL_TOOL package
+# Generated from imports used in:
+# - EMAIL_TOOL/backend/tools/email_tools.py
+# - EMAIL_TOOL/backend/services/*.py
+# - EMAIL_TOOL/backend/repositories/email_repository.py
+# - EMAIL_TOOL/backend/utils/*.py
+
+# Core observability and agent runtime
+logfire==4.25.0
+pydantic-ai[google,logfire]==1.65.0
+
+# Microsoft Graph email operations (read/search/draft/send)
+msgraph-sdk==1.55.0
+azure-identity==1.25.2
+
+# Email body rendering and templating
+jinja2==3.1.6
+markdown==3.10.2
+bleach==6.3.0
+
+# Structured settings
+pydantic-settings==2.13.1
+
+# Attachment analysis (required only if using get_email_attachments_tool)
+google-genai==1.65.0
+pandas==3.0.1
+openpyxl==3.1.5
+python-docx==1.2.0
