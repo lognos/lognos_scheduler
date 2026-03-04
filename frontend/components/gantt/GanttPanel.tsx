@@ -6,10 +6,10 @@
  * Virtualized for performance with 500-1000+ activities.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, isValid, parseISO, differenceInDays } from 'date-fns';
-import { X, Calendar, AlertTriangle, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
+import { X, Calendar, AlertTriangle, GitBranch, ChevronRight, ChevronDown, Printer } from 'lucide-react';
 import { GanttChartData, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate, BaselineMode } from '@/types/schedule';
 import {
   useTimeline,
@@ -21,6 +21,7 @@ import {
   SortMode,
 } from './hooks';
 import { RelationshipArrows } from './RelationshipArrows';
+import { executePrint } from '@/services/printService';
 import ganttStyleSettings from './ganttStyleSettings';
 
 interface GanttPanelProps {
@@ -183,6 +184,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   const [activityColumnWidth, setActivityColumnWidth] = useState<number>(BASE_ACTIVITY_COLUMN_WIDTH);
   const [visibleColumns, setVisibleColumns] = useState<OptionalColumnKey[]>([]);
   const [collapsedSummaryKeys, setCollapsedSummaryKeys] = useState<Set<string>>(new Set());
+  const [isPrinting, setIsPrinting] = useState(false);
+  const printButtonRef = useRef<HTMLButtonElement>(null);
 
   const activityColumnMinWidth = useMemo(
     () => BASE_ACTIVITY_COLUMN_WIDTH + (visibleColumns.length * OPTIONAL_COLUMN_WIDTH),
@@ -367,6 +370,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   const activeView = activeViewKey
     ? availableViews.find((view) => view.view_key === activeViewKey)
     : null;
+
   const hasLevel2CollapsibleSummaries = useMemo(
     () => positionedItems.some(
       (item) => item.is_summary && (item.level ?? 1) === 2 && collapsibleSummaryKeys.has(getSummaryKey(item))
@@ -398,6 +402,50 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
     return items;
   }, [positionedItems, collapsedSummaryKeys]);
 
+  const handlePrint = useCallback(() => {
+    // Set isPrinting = true so the virtualizer renders ALL rows.
+    // The useEffect below will call executePrint once rows are rendered.
+    setIsPrinting(true);
+  }, []);
+
+  // When isPrinting becomes true and the virtualizer has rendered all rows,
+  // execute the native print flow, then reset.
+  useEffect(() => {
+    if (!isPrinting) return;
+
+    // Wait two frames for the virtualizer to expand and render all rows
+    let cancelled = false;
+    const run = async () => {
+      await new Promise((r) => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(r));
+      // Extra settle for large DOM expansion
+      await new Promise((r) => setTimeout(r, 150));
+      if (cancelled) return;
+
+      const projectId = data.view?.source?.project_id;
+      const versionId = data.view?.source?.schedule_version_id;
+      const projectLabel = projectId ? `Project ${projectId}` : (data.view?.title ?? 'Schedule');
+      const versionLabel = versionId ? `v${versionId}` : undefined;
+
+      try {
+        await executePrint({
+          projectName: projectLabel,
+          versionLabel,
+          viewName: activeView?.view_name,
+          itemCount: visibleItems.length,
+          projectStart: data.project_start,
+          projectFinish: data.project_finish,
+          grouping: data.grouping,
+        });
+      } finally {
+        setIsPrinting(false);
+      }
+    };
+
+    run();
+    return () => { cancelled = true; };
+  }, [isPrinting, data, activeView, visibleItems.length]);
+
   const headerMetaItems = useMemo(
     () => [
       { label: 'Start', value: formatProjectDate(data.project_start) },
@@ -421,8 +469,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   const rowVirtualizer = useVirtualizer({
     count: visibleItems.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT_PX, // row height in px
-    overscan: 10, // render 10 extra rows above/below viewport for smooth scrolling
+    estimateSize: () => ROW_HEIGHT_PX,
+    overscan: isPrinting ? visibleItems.length : 10,
   });
 
   const virtualRows = rowVirtualizer.getVirtualItems();
@@ -475,6 +523,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
 
   return (
     <div
+      data-gantt-panel-root
       className="fixed top-20 right-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden"
       style={{ width: `${width}px` }}
     >
@@ -484,7 +533,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         aria-hidden="true"
       />
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-[#0d1117] rounded-t-xl">
+      <div data-gantt-no-print className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-[#0d1117] rounded-t-xl">
         <div className="flex items-center gap-4">
           <Calendar className="h-5 w-5 text-blue-400" />
           <h2 className="text-lg font-light text-white">Schedule</h2>
@@ -501,7 +550,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         </div>
       </div>
 
-      <div className="relative z-40 px-4 py-2 bg-[#0d1117] border-b border-dark-700 text-xs flex items-center justify-between gap-3">
+      <div data-gantt-no-print className="relative z-40 px-4 py-2 bg-[#0d1117] border-b border-dark-700 text-xs flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             {availableViews.length > 0 && (
               <div className="relative group">
@@ -702,7 +751,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
             <p>No activities match the current filter</p>
           </div>
         ) : (
-          <div className="min-w-[500px] flex flex-col flex-1 overflow-hidden relative">
+          <div data-gantt-printable className="min-w-[500px] flex flex-col flex-1 overflow-hidden relative">
             <div
               className="absolute top-0 bottom-0 w-2 cursor-col-resize z-20"
               style={{ left: `${activityColumnWidth - 4}px` }}
@@ -732,6 +781,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
               >
                 {stickySummaryItems.length > 0 && (
                   <div
+                    data-gantt-no-print
                     className="sticky top-0 z-30"
                     style={{ height: `${stickyStackHeight}px` }}
                   >
@@ -835,6 +885,9 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
         hasUpdates={updatesMap.hasUpdates}
         showUpdates={showUpdates}
         hasBaselineUpdates={baselineUpdatesMap.hasUpdates}
+        onPrintClick={handlePrint}
+        printDisabled={visibleItems.length === 0 || isViewLoading}
+        printButtonRef={printButtonRef}
       />
     </div>
   );
@@ -1293,9 +1346,12 @@ interface LegendProps {
   hasUpdates?: boolean;
   showUpdates?: boolean;
   hasBaselineUpdates?: boolean;
+  onPrintClick?: () => void;
+  printDisabled?: boolean;
+  printButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, onPrintClick, printDisabled, printButtonRef }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
   const bus = ganttStyleSettings.baselineUpdates;
@@ -1393,6 +1449,23 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
               </div>
               <span>Baseline Update</span>
             </div>
+          </>
+        )}
+        {/* Print icon */}
+        {onPrintClick && (
+          <>
+            <div className="flex-1" />
+            <button
+              ref={printButtonRef}
+              type="button"
+              onClick={onPrintClick}
+              disabled={printDisabled}
+              className={`p-1 rounded transition-colors ${printDisabled ? 'opacity-30 cursor-not-allowed' : 'hover:bg-dark-700'}`}
+              title="Print schedule"
+              aria-label="Print schedule"
+            >
+              <Printer className="h-3.5 w-3.5" />
+            </button>
           </>
         )}
       </div>

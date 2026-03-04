@@ -52,7 +52,7 @@ A print icon will be added to the GanttPanel footer (legend bar). Clicking it op
 |------|--------|
 | `frontend/components/gantt/GanttPanel.tsx` | Add `Printer` icon in Legend footer; manage popup open state; wire to print service |
 | `frontend/components/gantt/index.ts` | Re-export `PrintOptionsPopup` (internal use only) |
-| `frontend/package.json` | Add `html-to-image` dependency |
+| `frontend/package.json` | Add `modern-screenshot` dependency |
 
 ---
 
@@ -185,7 +185,7 @@ printGanttPanel(options)
   ├── 4. If image mode:
   │     ├── Locate the GanttPanel root element via data attribute
   │     ├── Apply print-friendly color overrides before capture
-  │     ├── Capture the Gantt content area as PNG using html-to-image
+  │     ├── Capture the Gantt content area as PNG using modern-screenshot
   │     └── Restore original colors after capture
   ├── 5. Build print HTML document
   │     ├── Metadata header (project name, dates, view name, timestamp)
@@ -199,7 +199,7 @@ printGanttPanel(options)
 
 ### 3. Capture Strategy
 
-The GanttPanel contains complex DOM: SVG relationship arrows, absolutely-positioned virtualized rows, sticky summaries, and CSS gradients. Rather than trying to clone and re-style this DOM, we capture the visible content area as a single PNG image using `html-to-image` (`toPng`).
+The GanttPanel contains complex DOM: SVG relationship arrows, absolutely-positioned virtualized rows, sticky summaries, and CSS gradients. Rather than trying to clone and re-style this DOM, we capture the visible content area as a single PNG image using `modern-screenshot` (`domToPng`).
 
 **Why image capture over DOM cloning:**
 
@@ -323,7 +323,7 @@ async function printHtmlDocument(html: string): Promise<void> {
 
 ### 6. Fallback Path
 
-If `html-to-image` capture fails (e.g., CORS issues with fonts, memory on very large charts), fall back to a text-based print:
+If `modern-screenshot` capture fails (e.g., CORS issues with fonts, memory on very large charts), fall back to a text-based print:
 
 - Extract activity data from the `GanttChartData` prop
 - Render a simple HTML table: Activity ID | Name | Start | Finish | Duration | Float | Status
@@ -401,7 +401,7 @@ export interface ElementColorState {
 
 | Package | Version | Purpose | Size |
 |---------|---------|---------|------|
-| `html-to-image` | ^1.11 | DOM-to-PNG capture for the Gantt area | ~15 KB gzipped |
+| `modern-screenshot` | ^4.6 | DOM-to-PNG capture for the Gantt area (actively maintained fork of html-to-image with web worker support, smaller bundle) | ~9 KB gzipped |
 
 `lucide-react` already includes the `Printer` icon — no new icon library needed.
 
