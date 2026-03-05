@@ -175,9 +175,19 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   isViewLoading = false,
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
-  const [showLinks, setShowLinks] = useState<boolean>(false);
+  const [showLinks, setShowLinks] = useState<boolean>(
+    () => data.capabilities?.links?.render_enabled ?? false
+  );
   const [showBaseline, setShowBaseline] = useState<boolean>(true);
   const [baselineMode, setBaselineMode] = useState<BaselineMode>(data.baseline_mode || 'own');
+
+  // Sync showLinks when backend sends new data with render_enabled hint
+  useEffect(() => {
+    const backendHint = data.capabilities?.links?.render_enabled;
+    if (backendHint !== undefined) {
+      setShowLinks(backendHint);
+    }
+  }, [data]);
   const [showUpdates, setShowUpdates] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -949,7 +959,7 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumn
       {/* Month row */}
       <div className="flex border-b border-dark-600 pb-2">
         <div className="shrink-0 flex items-center text-xs font-medium text-gray-400" style={{ width: `${activityColumnWidth}px` }}>
-          <div className="truncate pr-2" style={{ width: `${activityNameColumnWidth}px` }}>
+          <div className="truncate px-2 text-center" style={{ width: `${activityNameColumnWidth}px` }}>
             Activity
           </div>
           {visibleColumns.map((columnKey) => {
@@ -957,7 +967,7 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumn
             return (
               <div
                 key={columnKey}
-                className="truncate px-2 text-right"
+                className="truncate px-2 text-center"
                 style={{ width: `${OPTIONAL_COLUMN_WIDTH}px` }}
                 title={label}
               >
@@ -1054,7 +1064,7 @@ function HierarchicalRow({
         {visibleColumns.map((columnKey) => (
           <div
             key={`${item.id}-${columnKey}`}
-            className="shrink-0 px-2 text-xs text-gray-300 text-right truncate"
+            className="shrink-0 px-2 text-xs text-gray-300 text-center truncate"
             style={{ width: `${OPTIONAL_COLUMN_WIDTH}px` }}
             title={formatOptionalColumnValue(item, columnKey)}
           >

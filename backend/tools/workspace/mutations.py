@@ -652,16 +652,17 @@ async def calculate_gantt_ws(
             own_baseline_rows=own_baseline_rows,
         )
         
-        # Stream Gantt panel event to frontend
-        gantt_event = {
-            'type': 'gantt_panel',
-            'action': 'show',
-            'data': gantt_payload,
-        }
-        
-        # Store event for streaming (will be picked up by chat router)
-        if ctx.deps.gantt_event_queue is not None:
-            ctx.deps.gantt_event_queue.append(gantt_event)
+        # Stream Gantt panel event to frontend (skip when render_gantt=False)
+        if req.render_gantt:
+            gantt_event = {
+                'type': 'gantt_panel',
+                'action': 'show',
+                'data': gantt_payload,
+            }
+            
+            # Store event for streaming (will be picked up by chat router)
+            if ctx.deps.gantt_event_queue is not None:
+                ctx.deps.gantt_event_queue.append(gantt_event)
         
         # Return summary message
         warning_note = f" ({len(result.warnings)} warnings)" if result.warnings else ""
@@ -689,6 +690,7 @@ async def calculate_gantt_ws(
         filter_note = f" filtered by [{', '.join(filter_parts)}]" if filter_parts else ""
         total_note = f" ({len(filtered_df)} of {len(workspace.activities_df)} total)" if has_filters else ""
         
+        verb = "Gantt displayed" if req.render_gantt else "CPM recalculated"
         if grouping_applied:
             validation_note = ""
             if ms_validation_summary and ms_validation_summary['total_compared'] > 0:
@@ -697,7 +699,7 @@ async def calculate_gantt_ws(
                     f"{ms_validation_summary['total_compared']} "
                     "within 1 day"
                 )
-            return f"Gantt displayed: {summary_count} groups, {detail_count} activities{grouping_note}{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}{validation_note}"
+            return f"{verb}: {summary_count} groups, {detail_count} activities{grouping_note}{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}{validation_note}"
         else:
             validation_note = ""
             if ms_validation_summary and ms_validation_summary['total_compared'] > 0:
@@ -706,7 +708,7 @@ async def calculate_gantt_ws(
                     f"{ms_validation_summary['total_compared']} "
                     "within 1 day"
                 )
-            return f"Gantt displayed: {detail_count} activities{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}{validation_note}"
+            return f"{verb}: {detail_count} activities{filter_note}{total_note}, {result.critical_path_length_days:.0f} day critical path{warning_note}{validation_note}"
         
     except Exception as e:
         logfire.error("Error in calculate_gantt_ws", error=str(e))

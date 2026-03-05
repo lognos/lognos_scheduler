@@ -104,9 +104,17 @@ async def get_driving_path_ws(
         df = workspace.activities_df
         rels = workspace.relationships_df
 
-        # Verify target exists
+        # Verify target exists; fallback: treat input as ms_uid (task_code)
         if target_id not in df['task_id'].values:
-            return f"Activity with task_id {target_id} not found in workspace."
+            code_match = df[df['task_code'].astype(str) == str(target_id)]
+            if not code_match.empty:
+                target_id = int(code_match.iloc[0]['task_id'])
+            else:
+                return (
+                    f"Activity {target_id} not found in workspace by task_id "
+                    f"or task_code (ms_uid). Use get_activity_ms to look up "
+                    f"the correct identifier, then retry."
+                )
 
         # Build a quick adjacency lookup: succ_id -> list of pred_ids
         pred_map: dict[int, list[int]] = {}

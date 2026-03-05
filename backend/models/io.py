@@ -447,6 +447,14 @@ class CalculateGanttWsRequest(BaseModel):
         default=None,
         description="Optional data envelope requirements that define which datasets must be present in response."
     )
+    render_gantt: bool = Field(
+        default=True,
+        description=(
+            "If true (default), push the Gantt chart to the frontend after calculation. "
+            "Set to false to recalculate CPM dates silently without updating the displayed chart. "
+            "Useful when another tool (e.g. get_driving_path_ws) will render a focused view afterwards."
+        )
+    )
 
 
 class SnapshotBaselineWsRequest(BaseModel):
