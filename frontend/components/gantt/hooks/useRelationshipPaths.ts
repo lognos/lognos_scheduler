@@ -55,14 +55,33 @@ export function useRelationshipPaths({
 }: UseRelationshipPathsOptions): RelationshipPath[] {
   return useMemo(() => {
     if (!items || items.length === 0 || !relationships || relationships.length === 0 || containerWidth === 0) {
+      console.log('[useRelationshipPaths] early return:', {
+        items: items?.length,
+        relationships: relationships?.length,
+        containerWidth,
+      });
       return [];
     }
 
     // Build lookup map: s_item_id → (row index, item)
     const itemMap = new Map<string, { item: PositionedItem; rowIndex: number }>();
     items.forEach((item, index) => {
-      itemMap.set(item.s_item_id, { item, rowIndex: index });
+      itemMap.set(String(item.s_item_id), { item, rowIndex: index });
     });
+
+    // DEBUG: check which relationships match
+    let matchCount = 0;
+    let missCount = 0;
+    for (const rel of relationships.slice(0, 10)) {
+      const hasPred = itemMap.has(String(rel.pred_id));
+      const hasSucc = itemMap.has(String(rel.succ_id));
+      if (hasPred && hasSucc) matchCount++;
+      else {
+        missCount++;
+        console.log('[useRelationshipPaths] MISS:', rel.pred_id, '->', rel.succ_id, 'predFound:', hasPred, 'succFound:', hasSucc);
+      }
+    }
+    console.log('[useRelationshipPaths] match check (first 10):', matchCount, 'matched,', missCount, 'missed. itemMap keys sample:', Array.from(itemMap.keys()).slice(0, 5));
 
     // Filter and calculate paths, deduplicating by relationship ID
     const seenIds = new Set<string>();
@@ -94,8 +113,8 @@ function calculatePath(
   rowHeight: number,
   containerWidth: number
 ): RelationshipPath | null {
-  const pred = itemMap.get(rel.pred_id);
-  const succ = itemMap.get(rel.succ_id);
+  const pred = itemMap.get(String(rel.pred_id));
+  const succ = itemMap.get(String(rel.succ_id));
 
   if (!pred || !succ) return null;
 

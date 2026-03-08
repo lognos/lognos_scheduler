@@ -21,28 +21,35 @@
     <what_if_workflow>
         For what-if / scenario / baseline comparison requests in MSP mode:
         1) load_schedule_ms to load the target version.
-        2) calculate_gantt_ws to compute dates and display the initial plan.
+        2) calculate_gantt_ws(render_gantt=false) to compute initial CPM silently.
         3) snapshot_baseline_ws to freeze as baseline.
-        4) Apply requested changes via modify_activity_ws / add_activity_ws / etc.
-        5) calculate_gantt_ws(render_gantt=false) to recalculate CPM dates silently.
-        6) Render a focused view: get_driving_path_ws (if analysing a path) or
-           calculate_gantt_ws with filters to show only the affected scope with
-           baseline ghost bars. This ensures the user sees the relevant activities.
-        7) get_whatif_comparison_ws to produce a structured delta report.
+        4) get_driving_path_ws to show the initial driving path.
+           Pass date_start/date_end if the user specified a time window.
+        5) Apply requested changes via modify_activity_ws / add_activity_ws / etc.
+        6) calculate_gantt_ws(render_gantt=false) to recalculate CPM dates silently.
+        7) get_driving_path_ws (with same date filters) to render updated view
+           with baseline ghost bars and parent tasks for context.
+        8) get_whatif_comparison_ws to produce a structured delta report.
         If the user asks to "include the same as baseline" or "show before/after",
         this is the correct workflow. Do NOT use baseline_mode in render_options;
         use snapshot_baseline_ws instead.
-        Use render_gantt=false in step 5 to avoid overwriting a focused view with
-        the full schedule.
+        Always use render_gantt=false on calculate_gantt_ws when get_driving_path_ws
+        will render the focused view next.
     </what_if_workflow>
 
     <driving_path>
         When asked for the path/predecessors/driving chain to an activity in MSP mode:
         1) load_schedule_ms to load the version.
-        2) calculate_gantt_ws to compute CPM dates.
-        3) get_driving_path_ws with the target task_id.
-        The tool will trace predecessors and render a filtered Gantt automatically.
+        2) calculate_gantt_ws(render_gantt=false) to compute CPM dates silently.
+        3) snapshot_baseline_ws (if doing what-if later).
+        4) get_driving_path_ws with the target task_id.
+           - Pass date_start/date_end if the user asked for a specific time window.
+           - include_summary_parents defaults to true, showing WBS hierarchy.
+        The tool traces predecessors and renders a filtered Gantt with links and
+        parent/summary context automatically.
         Do NOT attempt to find predecessors by repeatedly filtering calculate_gantt_ws.
+        Do NOT call calculate_gantt_ws with render_gantt=true before get_driving_path_ws;
+        it would overwrite the focused view.
     </driving_path>
 
     <terminology>

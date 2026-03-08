@@ -377,6 +377,12 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
   const isLevel2State = level2CollapsibleSummaryKeys.size > 0 && areSetsEqual(collapsedSummaryKeys, level2CollapsibleSummaryKeys);
   const isExpandAllState = collapsedSummaryKeys.size === 0;
   const relationships = data.relationships ?? [];
+  // DEBUG: log relationship data reaching frontend
+  if (relationships.length > 0) {
+    console.log('[GanttPanel] relationships:', relationships.length, 'showLinks:', showLinks, 'sample:', relationships.slice(0, 3));
+  } else {
+    console.log('[GanttPanel] NO relationships in data. data keys:', Object.keys(data), 'capabilities:', data.capabilities?.links);
+  }
   const activeView = activeViewKey
     ? availableViews.find((view) => view.view_key === activeViewKey)
     : null;
@@ -700,12 +706,13 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                   }`}
                   title={showBaseline ? 'Hide baseline' : 'Show baseline'}
                 >
-                  {baselineMode === 'own' ? 'Baseline' : baselineMode === 'previous_version' ? 'Baseline (Prev)' : 'Baseline (DB)'}
+                  {baselineMode === 'what_if' ? 'Baseline (What-If)' : baselineMode === 'own' ? 'Baseline' : baselineMode === 'previous_version' ? 'Baseline (Prev)' : 'Baseline (DB)'}
                 </button>
 
                 <div className="absolute left-0 top-full mt-1 min-w-48 rounded-md border border-dark-600 bg-[#0d1117] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-50">
                   {([
-                    { mode: 'own' as BaselineMode, label: 'Own Baseline', available: true },
+                    { mode: 'what_if' as BaselineMode, label: 'What-If Baseline', available: data.available_baseline_modes?.what_if ?? false },
+                    { mode: 'own' as BaselineMode, label: 'Own Baseline', available: data.available_baseline_modes?.own ?? true },
                     { mode: 'previous_version' as BaselineMode, label: `Previous Version${data.baseline_mode === 'previous_version' && data.baseline_label ? ` (${data.baseline_label})` : ''}`, available: data.available_baseline_modes?.previous_version ?? false },
                     { mode: 'database_baseline' as BaselineMode, label: `Database Baseline${data.baseline_mode === 'database_baseline' && data.baseline_label ? ` (${data.baseline_label})` : ''}`, available: data.available_baseline_modes?.database_baseline ?? false },
                   ]).map((opt, index) => (
@@ -724,7 +731,7 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
                         baselineMode === opt.mode
                           ? 'text-blue-300 bg-blue-500/10'
                           : 'text-gray-200 hover:bg-dark-700/70'
-                      } ${index === 0 ? 'rounded-t-md' : ''} ${index === 2 ? 'rounded-b-md' : ''}`}
+                      } ${index === 0 ? 'rounded-t-md' : ''} ${index === 3 ? 'rounded-b-md' : ''}`}
                     >
                       <span className="mr-2">{baselineMode === opt.mode ? '●' : '○'}</span>
                       {opt.label}
@@ -1423,7 +1430,7 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
                   borderColor: bs.legendBorderColor,
                 }}
               />
-              <span>{baselineMode === 'previous_version' ? `vs. Previous${baselineLabel ? ` (${baselineLabel})` : ''}` : baselineMode === 'database_baseline' ? `vs. DB Baseline${baselineLabel ? ` (${baselineLabel})` : ''}` : 'Baseline'}</span>
+              <span>{baselineMode === 'what_if' ? 'vs. What-If Baseline (Visible Scope)' : baselineMode === 'previous_version' ? `vs. Previous${baselineLabel ? ` (${baselineLabel})` : ''}` : baselineMode === 'database_baseline' ? `vs. DB Baseline${baselineLabel ? ` (${baselineLabel})` : ''}` : 'Baseline'}</span>
             </div>
           </>
         )}

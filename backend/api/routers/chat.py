@@ -352,7 +352,19 @@ async def chat_stream(
                         has_events=bool(gantt_event_queue),
                     )
                     for gantt_event in gantt_event_queue:
-                        logfire.info("Yielding gantt event", event_type=gantt_event.get('type'), action=gantt_event.get('action'))
+                        _evt_data = gantt_event.get('data') or {}
+                        _evt_rels = _evt_data.get('relationships') or []
+                        _evt_items = _evt_data.get('items') or []
+                        _evt_caps = _evt_data.get('capabilities') or {}
+                        logfire.info(
+                            "Yielding gantt event",
+                            event_type=gantt_event.get('type'),
+                            action=gantt_event.get('action'),
+                            items_count=len(_evt_items),
+                            relationships_count=len(_evt_rels),
+                            capabilities_links=_evt_caps.get('links'),
+                            relationships_sample=_evt_rels[:3] if _evt_rels else [],
+                        )
                         yield sse_event(gantt_event)
             
             # Save assistant response to display history (always save, even if empty)

@@ -93,8 +93,9 @@ export type RelationshipType = 'FS' | 'SS' | 'FF' | 'SF';
  * - own: Current version's embedded baseline (default)
  * - previous_version: Start/finish dates from the previous schedule version
  * - database_baseline: Start/finish dates from the version flagged is_baseline=true
+ * - what_if: Filter-scoped baseline derived from visible activities (what-if analysis)
  */
-export type BaselineMode = 'own' | 'previous_version' | 'database_baseline';
+export type BaselineMode = 'own' | 'previous_version' | 'database_baseline' | 'what_if';
 
 /**
  * A user-reported activity update (delay, completion, start)
@@ -247,6 +248,7 @@ export interface GanttChartData {
     own: boolean;
     previous_version: boolean;
     database_baseline: boolean;
+    what_if?: boolean;
   };
 
   /** User-reported activity updates for indicator display */

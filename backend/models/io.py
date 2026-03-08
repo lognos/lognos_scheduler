@@ -352,7 +352,7 @@ class GanttRenderOptions(BaseModel):
         default=True,
         description="If True, enable activity update indicators when update data is available."
     )
-    baseline_mode: Literal["own", "previous_version", "database_baseline"] = Field(
+    baseline_mode: Literal["own", "previous_version", "database_baseline", "what_if"] = Field(
         default="own",
         description="Requested baseline comparison mode for rendering."
     )
@@ -370,7 +370,7 @@ class GanttDataEnvelopeRequest(BaseModel):
         default=True,
         description="If True, include update data in the payload envelope."
     )
-    include_baselines: list[Literal["own", "previous_version", "database_baseline"]] | None = Field(
+    include_baselines: list[Literal["own", "previous_version", "database_baseline", "what_if"]] | None = Field(
         default=None,
         description="Baseline datasets requested in the payload envelope."
     )
@@ -493,6 +493,28 @@ class GetDrivingPathWsRequest(BaseModel):
     render_gantt: bool = Field(
         default=True,
         description="If true, automatically render a Gantt chart filtered to only the driving path activities."
+    )
+    date_start: str | None = Field(
+        default=None,
+        description=(
+            "Optional ISO date (YYYY-MM-DD). When set, the Gantt visualization "
+            "only shows driving-path activities whose early_start >= this date. "
+            "The text report always includes the full chain regardless."
+        ),
+    )
+    date_end: str | None = Field(
+        default=None,
+        description=(
+            "Optional ISO date (YYYY-MM-DD). When set, the Gantt visualization "
+            "only shows driving-path activities whose early_finish <= this date."
+        ),
+    )
+    include_summary_parents: bool = Field(
+        default=True,
+        description=(
+            "Include parent/summary activities for context. Walks up the WBS "
+            "hierarchy so the Gantt shows where each activity sits in the project structure."
+        ),
     )
 
 

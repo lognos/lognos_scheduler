@@ -225,52 +225,166 @@ async def get_driving_path_ws(
 
         # Optionally render Gantt filtered to path activities
         if req.render_gantt and ctx.deps.gantt_event_queue is not None:
-            path_df = df[df['task_id'].isin(path_ids)]
-            if not path_df.empty:
-                gantt_items = []
+            # Apply date filters to the visual set (text report is always full)
+            vis_ids = path_ids.copy()
+            if req.date_start or req.date_end:
+                date_mask = pd.Series(True, index=df.index)
+                if req.date_start:
+                    ds = pd.to_datetime(req.date_start).date()
+                    date_mask &= df['early_start'] >= ds
+                if req.date_end:
+                    de = pd.to_datetime(req.date_end).date()
+                    date_mask &= df['early_finish'] <= de
+                date_filtered_ids = set(df.loc[date_mask, 'task_id'].tolist())
+                vis_ids = vis_ids & date_filtered_ids
+
+            path_df = df[df['task_id'].isin(vis_ids)]
+
+            # ---- Collect parent/summary tasks for hierarchy context ----
+            summary_ids: set[int] = set()
+            if req.include_summary_parents and 'is_summary' in df.columns:
+                all_summaries = df[df['is_summary'].fillna(False).astype(bool)]
+                wbs_to_tid: dict[str, int] = {}
+                for _, srow in all_summaries.iterrows():
+                    swbs = srow.get('wbs_path', '') or srow.get('wbs', '') or ''
+                    if swbs:
+                        wbs_to_tid[swbs] = int(srow['task_id'])
+
                 for _, row in path_df.iterrows():
-                    dur_h = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
-                    working_days = dur_h / hours_per_day
-                    es = row.get('early_start')
-                    ef = row.get('early_finish')
-                    cal_days = (ef - es).days + 1 if pd.notna(es) and pd.notna(ef) else 0
-                    pct = row.get('percent_complete')
-                    if pd.isna(pct):
-                        pct = row.get('phys_complete_pct')
-                    bl_s = row.get('baseline_start')
-                    bl_f = row.get('baseline_finish')
-                    bl_d = row.get('baseline_duration_d')
+                    wbs = row.get('wbs_path', '') or row.get('wbs', '') or ''
+                    while '.' in wbs:
+                        wbs = wbs.rsplit('.', 1)[0]
+                        if wbs in wbs_to_tid:
+                            summary_ids.add(wbs_to_tid[wbs])
 
-                    is_on_driving = int(row['task_id']) in driving_path
-                    item = build_schedule_item_payload(
-                        item_id=int(row['task_id']),
-                        s_item_id=row['task_code'],
-                        s_item=row['task_name'],
-                        working_days=working_days,
-                        calendar_days=cal_days,
-                        total_float=float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
-                        start=es if pd.notna(es) else None,
-                        finish=ef if pd.notna(ef) else None,
-                        is_critical=bool(row.get('is_critical', False)),
-                        wbs_path=row.get('wbs_path', ''),
-                        status=row.get('status', 'not_started'),
-                        percent_complete=float(pct) if pd.notna(pct) else None,
-                        level=2,
-                        is_summary=False,
-                        parent_id=None,
-                        children_count=0,
-                        group_name=None,
-                        baseline_start=bl_s if pd.notna(bl_s) else None,
-                        baseline_finish=bl_f if pd.notna(bl_f) else None,
-                        baseline_duration_d=float(bl_d) if pd.notna(bl_d) else None,
-                    )
-                    gantt_items.append(item)
+            # Build combined visible DataFrame (path activities + summary parents)
+            all_vis_ids = vis_ids | summary_ids
+            combined_df = df[df['task_id'].isin(all_vis_ids)]
 
-                # Build relationships for visible path activities
-                filtered_ids = set(path_df['task_id'].tolist())
+            # Sort by WBS so hierarchy renders in correct order
+            wbs_col = 'wbs_path' if 'wbs_path' in combined_df.columns else 'wbs'
+            if wbs_col in combined_df.columns:
+                combined_df = combined_df.copy()
+                combined_df['_sort_wbs'] = combined_df[wbs_col].fillna('')
+                combined_df = combined_df.sort_values('_sort_wbs')
+
+            # Build WBS→task_id map for parent_id resolution
+            wbs_to_task_id: dict[str, int] = {}
+            for _, row in combined_df.iterrows():
+                w = row.get('wbs_path', '') or row.get('wbs', '') or ''
+                if w:
+                    wbs_to_task_id[w] = int(row['task_id'])
+
+            gantt_items = []
+            for _, row in combined_df.iterrows():
+                is_summary = bool(row.get('is_summary', False))
+                wbs = row.get('wbs_path', '') or row.get('wbs', '') or ''
+                outline_level = wbs.count('.') + 1 if wbs else 1
+
+                # Resolve parent
+                parent_id = None
+                if wbs and '.' in wbs:
+                    parent_wbs = wbs.rsplit('.', 1)[0]
+                    if parent_wbs in wbs_to_task_id:
+                        parent_id = f"task-{wbs_to_task_id[parent_wbs]}"
+
+                dur_h = float(row.get('target_drtn_hr_cnt', 0)) if pd.notna(row.get('target_drtn_hr_cnt')) else 0
+                working_days = dur_h / hours_per_day
+                es = row.get('early_start')
+                ef = row.get('early_finish')
+
+                # For summary rows, derive bar geometry from visible descendants
+                if is_summary and wbs:
+                    desc_prefix = f"{wbs}."
+                    descendants = combined_df[
+                        combined_df.get('_sort_wbs', combined_df.get(wbs_col, pd.Series(dtype=str)))
+                        .astype(str).str.startswith(desc_prefix)
+                        & (~combined_df['is_summary'].fillna(False))
+                    ]
+                    if not descendants.empty:
+                        d_starts = descendants['early_start'].dropna()
+                        d_finishes = descendants['early_finish'].dropna()
+                        if not d_starts.empty:
+                            es = d_starts.min()
+                        if not d_finishes.empty:
+                            ef = d_finishes.max()
+                        working_days = float(descendants['target_drtn_hr_cnt'].fillna(0).astype(float).sum()) / hours_per_day
+
+                cal_days = (ef - es).days + 1 if pd.notna(es) and pd.notna(ef) else 0
+                pct = row.get('percent_complete')
+                if pd.isna(pct):
+                    pct = row.get('phys_complete_pct')
+                bl_s = row.get('baseline_start')
+                bl_f = row.get('baseline_finish')
+                bl_d = row.get('baseline_duration_d')
+
+                if is_summary and wbs:
+                    desc_prefix = f"{wbs}."
+                    baseline_descendants = combined_df[
+                        combined_df.get('_sort_wbs', combined_df.get(wbs_col, pd.Series(dtype=str)))
+                        .astype(str).str.startswith(desc_prefix)
+                        & (~combined_df['is_summary'].fillna(False))
+                    ]
+                    if not baseline_descendants.empty:
+                        bd_starts = baseline_descendants['baseline_start'].dropna() if 'baseline_start' in baseline_descendants.columns else pd.Series(dtype='datetime64[ns]')
+                        bd_finishes = baseline_descendants['baseline_finish'].dropna() if 'baseline_finish' in baseline_descendants.columns else pd.Series(dtype='datetime64[ns]')
+                        bd_durations = baseline_descendants['baseline_duration_d'].dropna() if 'baseline_duration_d' in baseline_descendants.columns else pd.Series(dtype='float')
+
+                        bl_s = bd_starts.min() if not bd_starts.empty else None
+                        bl_f = bd_finishes.max() if not bd_finishes.empty else None
+                        bl_d = float(bd_durations.astype(float).sum()) if not bd_durations.empty else None
+
+                children_count = 0
+                if is_summary and wbs:
+                    prefix = wbs + '.'
+                    children_count = len([
+                        w for w in wbs_to_task_id
+                        if w.startswith(prefix) and w.count('.') == wbs.count('.') + 1
+                    ])
+
+                # Determine status
+                pct_val = float(pct) if pd.notna(pct) else 0
+                status = 'completed' if pct_val >= 100 else ('in_progress' if pct_val > 0 else 'not_started')
+
+                item = build_schedule_item_payload(
+                    item_id=int(row['task_id']),
+                    s_item_id=str(row['task_code']),
+                    s_item=row['task_name'],
+                    working_days=working_days,
+                    calendar_days=cal_days,
+                    total_float=float(row.get('total_float_days', 0)) if pd.notna(row.get('total_float_days')) else 0,
+                    start=es if pd.notna(es) else None,
+                    finish=ef if pd.notna(ef) else None,
+                    is_critical=bool(row.get('is_critical', False)),
+                    wbs_path=wbs,
+                    status=status,
+                    percent_complete=float(pct) if pd.notna(pct) else None,
+                    level=outline_level,
+                    is_summary=is_summary,
+                    parent_id=parent_id,
+                    children_count=children_count,
+                    group_name=wbs.split('.')[0] if wbs else None,
+                    baseline_start=bl_s if pd.notna(bl_s) else None,
+                    baseline_finish=bl_f if pd.notna(bl_f) else None,
+                    baseline_duration_d=float(bl_d) if pd.notna(bl_d) else None,
+                )
+                gantt_items.append(item)
+
+            if gantt_items:
+                # Build relationships for visible work activities (exclude summaries)
+                work_ids = vis_ids  # relationships reference work tasks, not summaries
                 gantt_relationships: list[dict] = []
                 visible_rel_ids: list[str] = []
                 envelope_rels: list[dict] = []
+
+                logfire.info(
+                    "Driving path rels check",
+                    rels_empty=rels.empty,
+                    rels_count=len(rels),
+                    rels_columns=list(rels.columns) if not rels.empty else [],
+                    work_ids_count=len(work_ids),
+                    gantt_items_count=len(gantt_items),
+                )
 
                 if not rels.empty:
                     id_to_code = dict(zip(df['task_id'], df['task_code']))
@@ -290,14 +404,34 @@ async def get_driving_path_ws(
                         })
 
                     critical_set = set(workspace.critical_path_ids)
+                    _vis_set = {int(t) for t in work_ids}
+                    _id_to_code_map = {int(k): str(v) for k, v in id_to_code.items()}
+                    logfire.info(
+                        "Driving path relationship debug",
+                        raw_rels_count=len(raw_rels),
+                        visible_id_set_count=len(_vis_set),
+                        visible_id_set_sample=sorted(list(_vis_set))[:20],
+                        raw_rels_sample=[
+                            {"pred": r["pred_id"], "succ": r["succ_id"]}
+                            for r in raw_rels[:20]
+                        ],
+                        id_to_code_sample={str(k): v for k, v in list(_id_to_code_map.items())[:20]},
+                    )
                     gantt_relationships, envelope_rels, visible_rel_ids = build_relationship_projections(
                         raw_relationships=raw_rels,
-                        id_to_code_all={int(k): str(v) for k, v in id_to_code.items()},
-                        visible_id_set={int(t) for t in filtered_ids},
+                        id_to_code_all=_id_to_code_map,
+                        visible_id_set=_vis_set,
                         is_critical_edge=lambda p, s: p in critical_set and s in critical_set,
                     )
+                    logfire.info(
+                        "Driving path relationship results",
+                        gantt_relationships_count=len(gantt_relationships),
+                        envelope_rels_count=len(envelope_rels),
+                        visible_rel_ids_count=len(visible_rel_ids),
+                        gantt_relationships_sample=gantt_relationships[:5] if gantt_relationships else [],
+                    )
 
-                # Timeline bounds
+                # Timeline bounds from visible work activities
                 vis_starts = path_df['early_start'].dropna()
                 vis_finishes = path_df['early_finish'].dropna()
                 vis_start = vis_starts.min() if not vis_starts.empty else workspace.project_start
@@ -312,26 +446,31 @@ async def get_driving_path_ws(
                         (finishes is not None and finishes.notna().any())
                     )
 
+                filter_desc: dict = {'driving_path_to': req.target_task_id}
+                if req.date_start:
+                    filter_desc['date_start'] = req.date_start
+                if req.date_end:
+                    filter_desc['date_end'] = req.date_end
+
                 legacy_payload = {
                     'items': gantt_items,
                     'relationships': gantt_relationships,
                     'project_start': vis_start.isoformat() if vis_start else '',
                     'project_finish': vis_finish.isoformat() if vis_finish else '',
                     'critical_path_length': 0,
-                    'filter_applied': {
-                        'driving_path_to': req.target_task_id,
-                    },
+                    'filter_applied': filter_desc,
                     'total_activities': len(df),
-                    'filtered_activities': len(path_df),
+                    'filtered_activities': len(combined_df),
                     'available_activity_codes': workspace.code_types_with_values,
-                    'grouping': None,
-                    'preserve_order': False,
+                    'grouping': 'WBS' if summary_ids else None,
+                    'preserve_order': True,
                     'has_baseline': has_own_baseline,
-                    'baseline_mode': 'own' if has_own_baseline else None,
+                    'baseline_mode': 'what_if' if has_own_baseline else None,
                     'available_baseline_modes': {
                         'own': has_own_baseline,
                         'previous_version': False,
                         'database_baseline': False,
+                        'what_if': has_own_baseline,
                     },
                 }
 
@@ -342,12 +481,12 @@ async def get_driving_path_ws(
                     project_id=workspace.project_id,
                     schedule_version_id=workspace.source_version_id,
                     available_baseline_modes=legacy_payload['available_baseline_modes'],
-                    selected_baseline_mode='own' if has_own_baseline else None,
-                    render_options=None,
+                    selected_baseline_mode='what_if' if has_own_baseline else None,
+                    render_options={"show_links": True},
                     data_envelope_options=None,
                     envelope_activities=gantt_items,
                     envelope_relationships=envelope_rels,
-                    visible_activity_ids=[int(t) for t in path_df['task_id'].tolist()],
+                    visible_activity_ids=[int(t) for t in combined_df['task_id'].tolist()],
                     visible_relationship_ids=visible_rel_ids,
                     own_baseline_rows=[],
                 )
