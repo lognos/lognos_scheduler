@@ -5,10 +5,9 @@ uvicorn[standard]
 pydantic>=2.0
 pydantic-ai>=0.0.30
 pydantic-settings
-logfire[pydantic]
+logfire[pydantic,fastapi]
 numpy
 networkx>=3.0
-google-generativeai
 supabase
 sse-starlette
 jinja2>=3.0

@@ -1,6 +1,7 @@
 import sqlite3
 import numpy as np
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import hashlib
 import struct
 from typing import List, Dict, Tuple
@@ -15,7 +16,7 @@ class VectorService:
         # Configure Gemini
         if not settings.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is not set in configuration.")
-        genai.configure(api_key=settings.GEMINI_API_KEY)
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.model = 'models/embedding-001'
         self._cache: Dict[int, Dict[int, np.ndarray]] = {} # proj_id -> {task_id: vector}
 
@@ -88,14 +89,15 @@ class VectorService:
             
             try:
                 # Gemini API call
-                result = genai.embed_content(
+                result = self.client.models.embed_content(
                     model=self.model,
-                    content=texts,
-                    task_type="retrieval_document",
-                    title="P6 Activity"
+                    contents=texts,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                    )
                 )
                 
-                embeddings = result['embedding']
+                embeddings = [e.values for e in result.embeddings]
                 
                 # 4. Save to DB
                 for j, (task_id, _, source_hash) in enumerate(batch):
@@ -143,11 +145,14 @@ class VectorService:
             return []
 
         # 2. Embed Query
-        query_embedding = genai.embed_content(
+        result = self.client.models.embed_content(
             model=self.model,
-            content=query,
-            task_type="retrieval_query"
-        )['embedding']
+            contents=query,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_QUERY",
+            )
+        )
+        query_embedding = result.embeddings[0].values
         query_vec = np.array(query_embedding, dtype=np.float32)
 
         # 3. Compute Cosine Similarity

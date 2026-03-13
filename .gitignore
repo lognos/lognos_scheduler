@@ -1,7 +1,9 @@
 /venv/
+/.venv/
 .env
 .DS_Store
 __pycache__/
 *.pyc
 /preliminary/
 .vscode/mcp.json
+/.vscode/settings.json
