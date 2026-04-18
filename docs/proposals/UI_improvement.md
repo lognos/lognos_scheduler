@@ -1,3 +1,428 @@
+# Schedule Workspace UI Improvement Proposal (v2)
+
+## Summary
+
+Introduce a flexible Schedule Assistant workspace that lets the user pin or unpin chat and Gantt independently, while preparing the page to be embedded into a host application that already ships a similar chat UI.
+
+The proposal:
+
+- adds three concrete layout modes with a clear default
+- moves pin and unpin controls into the existing chat and Gantt headers
+- renames only the orchestration components that gain schedule-specific behavior, to avoid name collisions when embedded
+- introduces an explicit `embedded` vs `standalone` mode so host-provided shell elements (sidebar, project selector, user context) are not duplicated
+
+This is a focused refactor of `frontend/components/ChatLayout.tsx`, `frontend/components/ChatWithHistory.tsx`, `frontend/components/ChatHeader.tsx`, `frontend/components/gantt/GanttPanel.tsx`, plus their import sites. No new layout framework is introduced.
+
+## Requirements Recap
+
+From the user request:
+
+- Default mode: Gantt pinned full size, chat unpinned and floating.
+- Mode 2: Gantt pinned (about 80% width), chat pinned right (about 20%).
+- Mode 3: Chat pinned, Gantt pinned right (current layout).
+- Pin and unpin icons live in the chat and Gantt headers.
+- Reuse and modify existing components; create new components only if strictly needed.
+- This page will be embedded into another app that uses similar chat components, so renaming is required to avoid conflicts.
+- Some host-app components may be reused (chat header, bubbles, history) and the schedule workspace must not assume local ownership of those primitives forever.
+
+Modes 4 and 5 are intentionally left as future work. The state model must be open-ended enough to add them without rework.
+
+## Current State (verified in code)
+
+- `frontend/app/page.tsx` renders `ChatWithHistory`.
+- `frontend/components/ChatWithHistory.tsx` owns AG-UI streaming, conversation history, and renders `ChatLayout`.
+- `frontend/components/ChatLayout.tsx` renders the sidebar, the chat header, the messages, the input area, and conditionally the Gantt panel.
+- `frontend/components/ChatLayout.tsx` hardcodes `pl-16` to leave room for the standalone `Sidebar`.
+- `frontend/components/ChatHeader.tsx` renders the project selector plus history and new-conversation actions.
+- `frontend/components/gantt/GanttPanel.tsx` is a `fixed top-20 right-8 bottom-30` floating panel with internal width state and an `X` close action.
+- `frontend/components/gantt/index.ts` re-exports `GanttPanel`.
+- The current layout is effectively Mode 3 (chat-main, Gantt right-docked).
+
+Embedding implications discovered:
+
+- `Sidebar` and `ProjectSelector` are standalone-only. The host app already provides equivalent navigation and selection.
+- `useUser` and the auth provider are also likely host-owned.
+- The class `pl-16` and `right-8` style positioning will conflict with a host shell.
+- File-level names like `ChatLayout`, `ChatHeader`, `ChatWithHistory` are highly likely to collide with the host app.
+- `ConversationHistoryPanel` is also generic enough to collide; it should be namespaced when embedded but does not need to be modified for layout behavior.
+
+## Naming Strategy
+
+To avoid collisions in the host app, the orchestration components are renamed with the `SA` prefix (matching the existing sidebar nav label "SA" for Schedule Assistant). This is a single, consistent prefix across the new workspace shell.
+
+Renames:
+
+- `ChatLayout.tsx` -> `SAWorkspace.tsx`
+- `ChatWithHistory.tsx` -> `SAWorkspaceWithHistory.tsx`
+- `ChatHeader.tsx` -> `SAChatHeader.tsx`
+- `gantt/GanttPanel.tsx` -> `gantt/SAGanttPanel.tsx`
+
+Components left untouched (presentational, low collision risk inside an `sa/` import path):
+
+- `MessageBubble.tsx`
+- `ThinkingIndicator.tsx`
+- `InputArea.tsx`
+- `ConversationHistoryPanel.tsx`
+
+These remain reusable. When embedded, the host app may swap them out via composition (see "Embed Mode" below). The host app's chat bubble and history are expected to be acceptable replacements.
+
+`Sidebar.tsx`, `ProjectSelector.tsx`, `LognosLogo.tsx`, `Portal.tsx`, `ReviewBadge.tsx`, `ConversationSkeleton.tsx`, and `providers/` stay as-is. They are either standalone-only or already neutral.
+
+Import sites that must be updated in the rename pass:
+
+- `frontend/app/page.tsx` (renders `ChatWithHistory`)
+- `frontend/components/ChatWithHistory.tsx` (imports `ChatLayout`)
+- `frontend/components/ChatLayout.tsx` (imports `ChatHeader`, `GanttPanel`)
+- `frontend/components/gantt/index.ts` (re-exports `GanttPanel`)
+- Any test or storybook files that import these symbols
+
+The `gantt/index.ts` barrel should re-export the new name (`SAGanttPanel`) and drop the old `GanttPanel` export to prevent dual ownership.
+
+## Embed Mode vs Standalone Mode
+
+A single explicit prop drives host vs standalone behavior, so the workspace stays one component instead of two parallel trees.
+
+```ts
+type SAWorkspaceShellMode = 'standalone' | 'embedded';
+```
+
+Behavior matrix:
+
+| Concern | standalone | embedded |
+|---|---|---|
+| Renders `Sidebar` | yes | no |
+| Reserves left padding (`pl-16`) | yes | no (host owns layout) |
+| Renders `ProjectSelector` in header | yes | optional via prop, default no |
+| Owns user context fetching | yes (via `useUser`) | accepts user prop or context override |
+| Mounts conversation history panel | yes | optional, can be host-owned |
+| Persists layout in localStorage | yes (namespaced key) | yes (namespaced key, separate per host) |
+| Z-index of floating chat | local stacking context | bounded to host container |
+
+The mode default is `standalone`. The host opts into `embedded` explicitly when mounting `SAWorkspaceWithHistory`.
+
+Persistence keys must be namespaced to avoid collisions:
+
+- `lognos.sa.workspace.layoutMode`
+- `lognos.sa.workspace.floatingChat`
+- `lognos.sa.workspace.splitRatio`
+- `lognos.sa.workspace.ganttWidth`
+
+In `embedded` mode the host can pass a `persistenceNamespace` prop so multiple embeddings do not stomp on each other.
+
+## Layout Modes
+
+Three modes ship in the first iteration. Modes 4 and 5 are reserved.
+
+### Mode A — `gantt-full-chat-floating` (default)
+
+- Gantt fills the available workspace area inside the schedule shell.
+- Chat is rendered as a floating, draggable panel above the Gantt.
+- The chat header shows a "pin chat right" action.
+- The Gantt header does not show a "close" action in this mode (closing the Gantt would empty the workspace). Instead the Gantt header shows pin-mode actions.
+
+### Mode B — `gantt-main-chat-side`
+
+- Gantt occupies roughly 80% of the content width, chat occupies roughly 20% on the right.
+- The split is resizable via the divider.
+- Chat header shows "unpin to floating" and "swap sides" actions.
+- Gantt header shows "make full" and "swap sides" actions.
+
+### Mode C — `chat-main-gantt-side`
+
+- Chat occupies the main area on the left, Gantt is pinned right.
+- This matches the current visible layout and existing Gantt resize logic.
+- Chat header shows "unpin to floating" and "swap sides" actions.
+- Gantt header shows "make full" and "swap sides" actions.
+
+### Empty schedule fallback
+
+When no Gantt data is available, the effective mode falls back to a chat-only render regardless of the stored layout mode. The stored mode is preserved and re-applied as soon as Gantt data arrives. This avoids ever rendering a "Gantt full" canvas with no Gantt.
+
+```ts
+const effectiveMode: SAWorkspaceMode =
+  ganttPanel?.data ? layoutMode : 'chat-only-virtual';
+```
+
+`chat-only-virtual` is internal and is not user-selectable.
+
+## Header Interaction Model
+
+Pin and unpin lives in the chat and Gantt headers. The control set is concrete, not loose, and reuses lucide icons already used in the project (`lucide-react`).
+
+Suggested icons:
+
+- `Pin` and `PinOff` for chat pin/unpin
+- `Maximize2` for "make Gantt full"
+- `Columns2` for split mode (Mode B)
+- `PanelRight` / `PanelLeft` for swap sides
+- Existing `X` only for actions that truly close the panel; in embed mode the X may be hidden because the host owns visibility
+
+### Chat header (`SAChatHeader`)
+
+Visible actions, depending on `layoutMode`:
+
+- Mode A: `Pin` (pin chat right -> Mode B)
+- Mode B: `PinOff` (unpin to floating -> Mode A), `PanelLeft` (swap to Mode C)
+- Mode C: `PinOff` (unpin to floating -> Mode A), `PanelRight` (swap to Mode B)
+
+History and new-conversation actions remain unchanged.
+
+In `embedded` mode the project selector is hidden by default and the host is expected to provide the equivalent.
+
+### Gantt header (`SAGanttPanel`)
+
+Visible actions, depending on `layoutMode`:
+
+- Mode A: `Columns2` (switch to split -> Mode B)
+- Mode B: `Maximize2` (make Gantt full -> Mode A), `PanelLeft` (swap to Mode C)
+- Mode C: `Maximize2` (make Gantt full -> Mode A), `PanelRight` (swap to Mode B)
+
+The legacy `X` close action moves to a single behavior: hide the Gantt entirely. It is only shown when a meaningful empty state exists for the workspace (chat-only). In Mode A it is hidden because closing would leave an empty canvas.
+
+All controls reuse the same pill-style button look already used inside the Gantt header (`px-2.5 py-1 rounded-full border ...`), to avoid introducing a second visual language.
+
+## State Model
+
+Single explicit mode value. No combinations of independent booleans.
+
+```ts
+export type SAWorkspaceMode =
+  | 'gantt-full-chat-floating'
+  | 'gantt-main-chat-side'
+  | 'chat-main-gantt-side';
+
+export interface FloatingChatGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SAWorkspaceLayoutState {
+  mode: SAWorkspaceMode;
+  floatingChat: FloatingChatGeometry;
+  ganttSideWidth: number;     // used in Mode B and Mode C
+  splitRatio: number;         // used in Mode B; chat-side fraction
+  lastDockedMode: 'gantt-main-chat-side' | 'chat-main-gantt-side';
+}
+```
+
+`lastDockedMode` lets the chat unpin (-> Mode A) and re-pin to the user's last docked layout.
+
+State lives in `SAWorkspace` (formerly `ChatLayout`). It is hydrated from localStorage on mount when persistence is enabled, with safe fallbacks if no entry exists or the stored shape is invalid.
+
+## File-by-file Plan
+
+### `ChatLayout.tsx` -> `SAWorkspace.tsx`
+
+Responsibilities:
+
+- own `SAWorkspaceLayoutState`
+- compute `effectiveMode`
+- render `Sidebar` only when `shellMode === 'standalone'`
+- conditionally apply the `pl-16` sidebar offset only in `standalone`
+- render chat as a floating panel or as a docked column depending on `effectiveMode`
+- render the Gantt panel in `full`, `dockedRight`, or `dockedLeft` container variant depending on `effectiveMode`
+- pass header actions to `SAChatHeader` and `SAGanttPanel`
+
+The current `ganttWidth` state is renamed to `ganttSideWidth` and reused for both Mode B and Mode C. The current `handleGanttWidthChange` clamping logic stays.
+
+The current double-render of `InputArea` (welcome state vs footer) is preserved inside the floating chat shell as well.
+
+### `ChatWithHistory.tsx` -> `SAWorkspaceWithHistory.tsx`
+
+Stays the orchestrator for AG-UI streaming and history. Renamed only.
+
+Adds two optional props for embed scenarios:
+
+- `shellMode?: 'standalone' | 'embedded'` (default `'standalone'`)
+- `persistenceNamespace?: string` (default `'lognos.sa.workspace'`)
+
+The hardcoded `http://localhost:8500` URL is acknowledged as embed-incompatible but is out of scope here. A follow-up note: replace it with a configurable base URL when wiring the embed integration.
+
+### `ChatHeader.tsx` -> `SAChatHeader.tsx`
+
+Adds props:
+
+- `layoutMode: SAWorkspaceMode`
+- `onPinChatRight: () => void`
+- `onUnpinChatToFloating: () => void`
+- `onSwapSides: () => void`
+- `showProjectSelector?: boolean` (default `true`)
+
+Existing `onHistoryToggle` and `onNewConversation` are preserved.
+
+The project selector is rendered only when `showProjectSelector` is true. In `embedded` mode the workspace passes `showProjectSelector={false}` by default.
+
+### `gantt/GanttPanel.tsx` -> `gantt/SAGanttPanel.tsx`
+
+Adds a container variant prop:
+
+```ts
+type SAGanttContainerVariant = 'full' | 'dockedRight' | 'dockedLeft';
+```
+
+Container behavior:
+
+- `full`: fills its parent, no `fixed` positioning, no rounded outer shell, no own width prop required
+- `dockedRight`: keeps the current `fixed top-20 right-8 bottom-30` shell and `width` resize handle
+- `dockedLeft`: same as `dockedRight`, mirrored
+
+Adds props:
+
+- `layoutMode: SAWorkspaceMode`
+- `onMakeFull: () => void`
+- `onMakeSplit: () => void`
+- `onSwapSides: () => void`
+
+Internal behavior preserved:
+
+- `useTimeline`, `useBarPositions`, `RelationshipArrows`
+- column resize, sticky summaries, virtualization
+- the `data-gantt-panel-root` and `data-gantt-printable` attributes used by `services/printService.ts` are preserved exactly so print continues to work
+- baseline mode, view selector, and update toggles stay where they are
+
+The legacy `onClose` prop is preserved but only wired to a visible `X` when `effectiveMode !== 'gantt-full-chat-floating'`. In Mode A the close action is hidden.
+
+## Floating Chat Shell
+
+The floating chat is a JSX section inside `SAWorkspace`, not a new component, on first pass. If the JSX exceeds roughly 80 lines or starts duplicating logic, extract it into `frontend/components/SAFloatingChat.tsx` in a follow-up. This is the only "create only if strictly needed" candidate.
+
+Behavior:
+
+- positioned `absolute` inside the workspace container, not `fixed`, so it stays bounded inside the embedded host
+- drag from a header strip; reuses the same pointer-event pattern already used for Gantt resize in `SAGanttPanel`
+- min and max size clamped to the workspace bounds
+- initial position derived from the workspace size (e.g. top-right corner with margin)
+- no external drag library
+
+The floating chat reuses the same `MessageBubble`, `ThinkingIndicator`, and `InputArea` components, so message rendering stays identical to the docked modes.
+
+## Gantt Container CSS Strategy
+
+Concrete plan instead of "make it conditional":
+
+- `full`: outer wrapper is `relative w-full h-full` inside `SAWorkspace`'s flex layout; remove `fixed`, `top-20`, `right-8`, `bottom-30`, and the `width` prop usage in this variant
+- `dockedRight`: keep current `fixed top-20 right-8 bottom-30` and current `width` resize handle (preserves current visual exactly for Mode C)
+- `dockedLeft`: same as `dockedRight` with `right-8` swapped for `left-8` and the resize handle on the right edge of the panel
+
+The print path is unaffected because `data-gantt-panel-root` and the print stylesheet selectors remain on the same outer div.
+
+## Persistence
+
+LocalStorage with namespaced keys, hydrated on mount, written on change. Hydration is wrapped in a guard that:
+
+- ignores invalid JSON
+- ignores stored modes that are not in the current `SAWorkspaceMode` union
+- clamps stored geometry to current viewport bounds
+
+In embed mode, the namespace prefix is taken from `persistenceNamespace`.
+
+## Embedded Integration Contract
+
+When the host app embeds this workspace, the integration shape is:
+
+```tsx
+<SAWorkspaceWithHistory
+  shellMode="embedded"
+  persistenceNamespace="hostapp.sa"
+  // optional overrides; otherwise uses local defaults
+  // userOverride={hostUser}
+/>
+```
+
+Inside `embedded` mode:
+
+- no `Sidebar`
+- no `pl-16`
+- no `ProjectSelector` (host owns project context)
+- floating chat is bounded by the host container
+- Gantt panel switches `dockedRight` / `dockedLeft` from `fixed` to `absolute` so it stays inside the host pane (small adjustment to the variant CSS noted above; both variants must use `absolute` positioning when `shellMode === 'embedded'`)
+
+Out of scope but flagged:
+
+- Host-provided `MessageBubble` / `ConversationHistoryPanel` swap. To enable a full swap later, `SAWorkspace` would accept render-prop-style overrides, e.g. `renderMessage`, `renderHistory`. This is not implemented in v2 to keep the rename minimal, but the proposal notes it as the natural follow-up if the host insists on its own bubbles.
+
+## Phased Implementation Plan
+
+### Phase 1 — Mechanical rename (no behavior change)
+
+- Rename the four orchestration files and update all import sites.
+- Update `gantt/index.ts` barrel export.
+- Verify the app still renders identically (still Mode C-equivalent visually).
+- Ship.
+
+Risk: low. This is a refactor and should pass typecheck cleanly.
+
+### Phase 2 — Embed mode and headers wiring
+
+- Add `shellMode`, `persistenceNamespace`, and `showProjectSelector` props.
+- Wire conditional `Sidebar`, `pl-16`, and `ProjectSelector`.
+- Add the layout mode union and stub state in `SAWorkspace`.
+- Add the new header action props (still no-ops if not yet wired).
+
+Risk: low. Standalone behavior is preserved by defaults.
+
+### Phase 3 — Mode A (default Gantt-full + floating chat)
+
+- Add `full` container variant in `SAGanttPanel`.
+- Add the floating chat JSX inside `SAWorkspace`.
+- Add drag and clamp logic (reusing the Gantt resize pattern).
+- Add chat header `Pin` action and Gantt header `Columns2` action.
+- Hide the Gantt `X` close action in Mode A.
+- Make Mode A the default for new sessions when Gantt data is present.
+
+Risk: medium. Drag and z-index behavior need testing with the conversation history panel and any modal dialogs.
+
+### Phase 4 — Modes B and C with swap
+
+- Add `dockedLeft` container variant in `SAGanttPanel` (mirror of `dockedRight`).
+- Add resizable split divider for Mode B.
+- Add the swap-sides action in both headers.
+- Persist `lastDockedMode` for unpin restore.
+
+Risk: medium. The split divider is the most novel piece; it should reuse the Gantt resize pointer pattern.
+
+### Phase 5 — Persistence and polish
+
+- Namespaced localStorage hydration and writes.
+- Bounds clamping on viewport resize.
+- Optional `renderMessage` / `renderHistory` slots if the host integration requires it.
+
+Risk: low.
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Rename misses an import site and breaks the build | Single grep sweep before commit; the project compiles in CI |
+| Embedding still leaks standalone styling | `shellMode` gate and removal of `fixed` positioning in embed |
+| Gantt print behavior changes | Preserve `data-gantt-panel-root` and `data-gantt-printable` exactly; print service untouched |
+| Floating chat overlaps `ConversationHistoryPanel` | Workspace owns z-index ordering; history panel stays on top |
+| Mode A with no Gantt data is empty | `effectiveMode` fallback to chat-only when `ganttPanel.data` is null |
+| Persistence collides with host app keys | Namespaced keys, host can override prefix |
+| Two visual languages for header controls | Reuse the existing pill-button style from `SAGanttPanel` for all new actions |
+| GanttPanel `onClose` ambiguity | Hidden in Mode A; only shown when chat-only state is meaningful |
+
+## Out of Scope (explicit)
+
+- Backend changes
+- AG-UI protocol changes
+- Replacing `useUser` or auth provider for embedded mode
+- Replacing the hardcoded `http://localhost:8500` URL in `ChatWithHistory.tsx` (flagged for follow-up)
+- Modes 4 and 5
+- Mobile-specific layouts (the new modes target desktop; mobile falls back to chat-only)
+
+## Deliverables
+
+- Renamed components: `SAWorkspace.tsx`, `SAWorkspaceWithHistory.tsx`, `SAChatHeader.tsx`, `SAGanttPanel.tsx`
+- Updated imports in `frontend/app/page.tsx` and `frontend/components/gantt/index.ts`
+- New `SAWorkspaceLayoutState` and `SAWorkspaceMode` types (colocated in `SAWorkspace.tsx` initially; promote to `frontend/types/` if reused)
+- New `SAGanttContainerVariant` plumbing in `SAGanttPanel.tsx`
+- Pin / unpin / swap / make-full controls in both headers, using the existing pill-button style
+- Floating chat shell inside `SAWorkspace`
+- Namespaced localStorage persistence
+- `shellMode` and `persistenceNamespace` props on `SAWorkspaceWithHistory`
 # Schedule Workspace UI Improvement Proposal
 
 ## Summary
