@@ -1,7 +1,7 @@
 "use client";
 
-import { ChatWithHistory } from "@/components/ChatWithHistory";
+import { SAWorkspaceWithHistory } from "@/components/SAWorkspaceWithHistory";
 
 export default function Home() {
-  return <ChatWithHistory />;
+  return <SAWorkspaceWithHistory />;
 }

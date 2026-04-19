@@ -1,7 +1,12 @@
 /**
- * GanttPanel Component
+ * SAGanttPanel Component (Schedule Assistant)
  *
- * Floating Gantt chart panel with filters, hierarchy support, and virtualization.
+ * Gantt chart panel with filters, hierarchy support, and virtualization.
+ * Renders in three container variants driven by the workspace layout mode:
+ *   - 'full'        : fills its parent (Mode A: gantt-full-chat-floating)
+ *   - 'dockedRight' : fixed/absolute right-side panel (Mode C: chat-main-gantt-side)
+ *   - 'dockedLeft'  : fixed/absolute left-side panel (Mode B: gantt-main-chat-side)
+ *
  * Uses shared hooks for timeline and bar position calculations.
  * Virtualized for performance with 500-1000+ activities.
  */
@@ -9,8 +14,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, isValid, parseISO, differenceInDays } from 'date-fns';
-import { X, Calendar, AlertTriangle, GitBranch, ChevronRight, ChevronDown, Printer } from 'lucide-react';
+import { X, Calendar, AlertTriangle, GitBranch, ChevronRight, ChevronDown, Printer, Maximize2, Columns2, PanelLeft, PanelRight } from 'lucide-react';
 import { GanttChartData, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate, BaselineMode } from '@/types/schedule';
+import {
+  SAWorkspaceMode,
+  SAGanttContainerVariant,
+  SAShellMode,
+  SAWorkspaceLayoutActions,
+} from '@/types/workspace';
 import {
   useTimeline,
   useBarPositions,
@@ -24,7 +35,7 @@ import { RelationshipArrows } from './RelationshipArrows';
 import { executePrint } from '@/services/printService';
 import ganttStyleSettings from './ganttStyleSettings';
 
-interface GanttPanelProps {
+interface SAGanttPanelProps {
   data: GanttChartData;
   onClose: () => void;
   width: number;
@@ -34,6 +45,14 @@ interface GanttPanelProps {
   onSelectView?: (viewKey: ScheduleViewKey) => void;
   onBaselineModeChange?: (mode: BaselineMode) => void;
   isViewLoading?: boolean;
+  /** Container variant driven by the workspace layout mode. */
+  variant?: SAGanttContainerVariant;
+  /** Workspace shell mode; in 'embedded' the docked variants use absolute (host-bound) positioning. */
+  shellMode?: SAShellMode;
+  /** Active workspace layout mode; drives which header layout actions are visible. */
+  layoutMode?: SAWorkspaceMode;
+  /** Layout mutation actions provided by the workspace. When omitted, layout buttons are hidden. */
+  layoutActions?: SAWorkspaceLayoutActions;
 }
 
 /**
@@ -163,11 +182,15 @@ function areSetsEqual(first: Set<string>, second: Set<string>): boolean {
   return true;
 }
 
-export const GanttPanel: React.FC<GanttPanelProps> = ({
+export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   data,
   onClose,
   width,
   onWidthChange,
+  variant = 'dockedRight',
+  shellMode = 'standalone',
+  layoutMode,
+  layoutActions,
   availableViews = [],
   activeViewKey,
   onSelectView,
@@ -537,17 +560,53 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
 
   const stickyStackHeight = stickySummaryItems.length * ROW_HEIGHT_PX;
 
+  // Container variant -> outer className/style.
+  // - 'full'        : fills its parent (workspace canvas)
+  // - 'dockedRight' : right-docked panel (standalone=fixed; embedded=absolute, host-bound)
+  // - 'dockedLeft'  : left-docked panel (mirror of dockedRight)
+  const positioningClass = shellMode === 'embedded' ? 'absolute' : 'fixed';
+  const containerClass =
+    variant === 'full'
+      ? 'relative w-full h-full bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-10 flex flex-col overflow-hidden'
+      : variant === 'dockedLeft'
+        ? `${positioningClass} top-20 left-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden`
+        : `${positioningClass} top-20 right-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden`;
+  const containerStyle = variant === 'full' ? undefined : { width: `${width}px` };
+
+  // Width-resize handle position depends on which side the panel is docked to.
+  // 'dockedRight' resizes from its left edge (existing behavior).
+  // 'dockedLeft'  resizes from its right edge.
+  // 'full'        has no width handle.
+  const showWidthHandle = variant !== 'full';
+  const widthHandleClass =
+    variant === 'dockedLeft'
+      ? 'absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-20'
+      : 'absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-20';
+
+  // Hide the X close action in 'gantt-full-chat-floating' (Mode A): closing
+  // would leave an empty workspace canvas. In other modes the X keeps its
+  // existing behavior of hiding the Gantt panel entirely.
+  const showCloseButton = layoutMode !== 'gantt-full-chat-floating';
+
+  // Layout action availability per current mode.
+  const showMakeFull = !!layoutActions && layoutMode !== 'gantt-full-chat-floating';
+  const showMakeSplit = !!layoutActions && layoutMode === 'gantt-full-chat-floating';
+  const showSwapLeft = !!layoutActions && layoutMode === 'gantt-main-chat-side';
+  const showSwapRight = !!layoutActions && layoutMode === 'chat-main-gantt-side';
+
   return (
     <div
       data-gantt-panel-root
-      className="fixed top-20 right-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden"
-      style={{ width: `${width}px` }}
+      className={containerClass}
+      style={containerStyle}
     >
-      <div
-        className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-20"
-        onMouseDown={startResize}
-        aria-hidden="true"
-      />
+      {showWidthHandle && (
+        <div
+          className={widthHandleClass}
+          onMouseDown={startResize}
+          aria-hidden="true"
+        />
+      )}
       {/* Header */}
       <div data-gantt-no-print className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-[#0d1117] rounded-t-xl">
         <div className="flex items-center gap-4">
@@ -556,13 +615,59 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({
           <HeaderMeta items={headerMetaItems} />
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-dark-700 rounded transition-colors"
-            aria-label="Close panel"
-          >
-            <X className="h-5 w-5 text-gray-400 hover:text-white" />
-          </button>
+          {showMakeFull && (
+            <button
+              type="button"
+              onClick={layoutActions!.makeGanttFull}
+              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+              title="Make Gantt full (chat floats)"
+              aria-label="Make Gantt full"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </button>
+          )}
+          {showMakeSplit && (
+            <button
+              type="button"
+              onClick={layoutActions!.makeSplit}
+              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+              title="Pin chat to side (split view)"
+              aria-label="Pin chat to side"
+            >
+              <Columns2 className="h-4 w-4" />
+            </button>
+          )}
+          {showSwapLeft && (
+            <button
+              type="button"
+              onClick={layoutActions!.swapSides}
+              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+              title="Move Gantt to right"
+              aria-label="Move Gantt to right"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+          )}
+          {showSwapRight && (
+            <button
+              type="button"
+              onClick={layoutActions!.swapSides}
+              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+              title="Move Gantt to left"
+              aria-label="Move Gantt to left"
+            >
+              <PanelRight className="h-4 w-4" />
+            </button>
+          )}
+          {showCloseButton && (
+            <button
+              onClick={onClose}
+              className="p-1 hover:bg-dark-700 rounded transition-colors"
+              aria-label="Close panel"
+            >
+              <X className="h-5 w-5 text-gray-400 hover:text-white" />
+            </button>
+          )}
         </div>
       </div>
 

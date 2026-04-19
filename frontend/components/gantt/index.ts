@@ -3,7 +3,7 @@
  */
 
 export { default as GanttChart } from './GanttChart';
-export { GanttPanel } from './GanttPanel';
+export { SAGanttPanel } from './SAGanttPanel';
 export { RelationshipArrows } from './RelationshipArrows';
 export { useTimeline, useBarPositions, useRelationshipPaths } from './hooks';
 export type {

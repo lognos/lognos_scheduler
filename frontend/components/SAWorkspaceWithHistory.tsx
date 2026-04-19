@@ -1,21 +1,33 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { ChatLayout } from '@/components/ChatLayout';
+import { SAWorkspace } from '@/components/SAWorkspace';
 import { ConversationHistoryPanel } from '@/components/ConversationHistoryPanel';
 import { useAGUIStream, Message } from '@/hooks/useAGUIStream';
 import { useUser } from '@/lib/contexts/UserContext';
+import { SAShellMode } from '@/types/workspace';
 import {
     ConversationNotFoundError,
     UnauthorizedConversationError,
     NetworkError,
 } from '@/types/conversation-errors';
 
+interface SAWorkspaceWithHistoryProps {
+    /** 'standalone' (default) renders sidebar/project selector. 'embedded' lets the host own them. */
+    shellMode?: SAShellMode;
+    /** Optional namespace for layout persistence keys; allows multiple host embeddings to coexist. */
+    persistenceNamespace?: string;
+}
+
 /**
- * Wrapper component that handles conversation history logic.
- * Keeps ChatLayout focused on message display only.
+ * SAWorkspaceWithHistory — wires conversation history + AG-UI stream into the
+ * Schedule Assistant workspace. Safe to embed: pass shellMode="embedded" and a
+ * unique persistenceNamespace from the host application.
  */
-export function ChatWithHistory() {
+export function SAWorkspaceWithHistory({
+    shellMode = 'standalone',
+    persistenceNamespace,
+}: SAWorkspaceWithHistoryProps = {}) {
     const { user } = useUser();
     const [showHistory, setShowHistory] = useState(false);
     const lastFetchRef = useRef<number>(0);
@@ -52,7 +64,6 @@ export function ChatWithHistory() {
 
     const handleSelectConversation = async (conversationId: string) => {
         try {
-            // Fetch messages via API
             const response = await fetch(
                 `http://localhost:8500/api/v1/conversations/${conversationId}?user_email=${encodeURIComponent(user?.email || '')}`
             );
@@ -82,7 +93,6 @@ export function ChatWithHistory() {
                 timestamp: new Date(msg.timestamp).getTime(),
             }));
 
-            // Load into stream
             loadConversation(conversationId, messages);
             setShowHistory(false);
         } catch (error) {
@@ -103,7 +113,7 @@ export function ChatWithHistory() {
 
     return (
         <>
-            <ChatLayout
+            <SAWorkspace
                 messages={messages}
                 agentState={agentState}
                 isLoading={isLoading}
@@ -117,6 +127,8 @@ export function ChatWithHistory() {
                 onSelectScheduleView={switchScheduleView}
                 onBaselineModeChange={switchBaselineMode}
                 isPreloadingSchedule={isPreloadingSchedule}
+                shellMode={shellMode}
+                persistenceNamespace={persistenceNamespace}
             />
 
             {showHistory && (
