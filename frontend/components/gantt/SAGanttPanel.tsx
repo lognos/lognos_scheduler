@@ -567,7 +567,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   const positioningClass = shellMode === 'embedded' ? 'absolute' : 'fixed';
   const containerClass =
     variant === 'full'
-      ? 'relative w-full h-full bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-10 flex flex-col overflow-hidden'
+      ? 'relative w-full flex-1 min-h-0 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-10 flex flex-col overflow-hidden'
       : variant === 'dockedLeft'
         ? `${positioningClass} top-20 left-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden`
         : `${positioningClass} top-20 right-8 bottom-30 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden`;

@@ -379,10 +379,10 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
 
     // Mode A: Gantt full + floating chat
     const renderGanttFullChatFloating = () => (
-        <div className={`flex-1 flex flex-col ${sidebarOffsetClass} relative`}>
+        <div className={`flex-1 flex flex-col min-h-0 ${sidebarOffsetClass} relative`}>
             {/* Gantt fills the canvas */}
             {ganttPanel?.data && (
-                <div className="flex-1 p-4">
+                <div className="flex-1 min-h-0 p-4 flex flex-col">
                     <SAGanttPanel
                         data={ganttPanel.data}
                         onClose={onHideGanttPanel ?? (() => {})}
@@ -439,7 +439,7 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         const ganttFlex = `${1 - splitRatio}`;
 
         const chatColumn = (
-            <div className="flex flex-col min-w-0 h-full" style={{ flex: chatFlex }}>
+            <div className="flex flex-col min-w-0 min-h-0 h-full" style={{ flex: chatFlex }}>
                 <SAChatHeader
                     onHistoryToggle={onHistoryToggle}
                     onNewConversation={onNewConversation}
@@ -453,7 +453,7 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         );
 
         const ganttColumn = ganttPanel?.data ? (
-            <div className="relative h-full p-4" style={{ flex: ganttFlex }}>
+            <div className="relative min-w-0 min-h-0 h-full p-4 flex flex-col" style={{ flex: ganttFlex }}>
                 <SAGanttPanel
                     data={ganttPanel.data}
                     onClose={onHideGanttPanel ?? (() => {})}
@@ -481,7 +481,7 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         );
 
         return (
-            <div className={`flex-1 flex ${sidebarOffsetClass}`}>
+            <div className={`flex-1 flex min-h-0 ${sidebarOffsetClass}`}>
                 {ganttOnLeft ? (
                     <>
                         {ganttColumn}
