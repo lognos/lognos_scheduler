@@ -80,8 +80,10 @@ function formatProjectDate(value?: string): string {
 const ROW_HEIGHT_PX = 36;
 const BASE_ACTIVITY_COLUMN_WIDTH = 192;
 const OPTIONAL_COLUMN_WIDTH = 108;
+const MIN_COLUMN_WIDTH = 60;
 
 type OptionalColumnKey = 'start' | 'finish' | 'float' | 'progress';
+type ResizableColumnKey = 'name' | OptionalColumnKey;
 
 /**
  * Visibility mode for relationship arrows.
@@ -236,21 +238,43 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   }, [data]);
   const [showUpdates, setShowUpdates] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const columnDragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [activityColumnWidth, setActivityColumnWidth] = useState<number>(BASE_ACTIVITY_COLUMN_WIDTH);
-  const [visibleColumns, setVisibleColumns] = useState<OptionalColumnKey[]>([]);
+  const columnDragStateRef = useRef<{ column: ResizableColumnKey; startX: number; startWidth: number } | null>(null);
+  const [nameColumnWidth, setNameColumnWidth] = useState<number>(BASE_ACTIVITY_COLUMN_WIDTH);
+  const [optionalColumnWidths, setOptionalColumnWidths] = useState<Record<OptionalColumnKey, number>>({
+    start: OPTIONAL_COLUMN_WIDTH,
+    finish: OPTIONAL_COLUMN_WIDTH,
+    float: OPTIONAL_COLUMN_WIDTH,
+    progress: OPTIONAL_COLUMN_WIDTH,
+  });
+  const [visibleColumns, setVisibleColumns] = useState<OptionalColumnKey[]>(['start', 'finish', 'float', 'progress']);
   const [collapsedSummaryKeys, setCollapsedSummaryKeys] = useState<Set<string>>(new Set());
   const [isPrinting, setIsPrinting] = useState(false);
   const printButtonRef = useRef<HTMLButtonElement>(null);
 
-  const activityColumnMinWidth = useMemo(
-    () => BASE_ACTIVITY_COLUMN_WIDTH + (visibleColumns.length * OPTIONAL_COLUMN_WIDTH),
-    [visibleColumns.length]
-  );
-
+  // One-time initialization based on the panel width: details section = 50% of panel,
+  // activity name column = 30% of that 50%, remaining 35% split evenly across optional columns.
+  const hasInitializedColumnsRef = useRef(false);
   useEffect(() => {
-    setActivityColumnWidth((previous) => Math.max(previous, activityColumnMinWidth));
-  }, [activityColumnMinWidth]);
+    if (hasInitializedColumnsRef.current) return;
+    if (!width || width <= 0) return;
+    const details = width * 0.5;
+    const name = Math.max(MIN_COLUMN_WIDTH, details * 0.3);
+    const remaining = Math.max(0, details - name);
+    const perOptional = Math.max(MIN_COLUMN_WIDTH, remaining / 4);
+    setNameColumnWidth(name);
+    setOptionalColumnWidths({
+      start: perOptional,
+      finish: perOptional,
+      float: perOptional,
+      progress: perOptional,
+    });
+    hasInitializedColumnsRef.current = true;
+  }, [width]);
+
+  const activityColumnWidth = useMemo(
+    () => nameColumnWidth + visibleColumns.reduce((sum, key) => sum + optionalColumnWidths[key], 0),
+    [nameColumnWidth, visibleColumns, optionalColumnWidths]
+  );
 
   const toggleVisibleColumn = (column: OptionalColumnKey) => {
     setVisibleColumns((previous) => {
@@ -277,11 +301,14 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
 
       const columnDragState = columnDragStateRef.current;
       if (columnDragState) {
-        const minWidth = activityColumnMinWidth;
-        const maxWidth = Math.max(minWidth, width - 320);
         const delta = event.clientX - columnDragState.startX;
-        const nextWidth = columnDragState.startWidth + delta;
-        setActivityColumnWidth(Math.min(Math.max(nextWidth, minWidth), maxWidth));
+        const nextWidth = Math.max(MIN_COLUMN_WIDTH, columnDragState.startWidth + delta);
+        if (columnDragState.column === 'name') {
+          setNameColumnWidth(nextWidth);
+        } else {
+          const key = columnDragState.column;
+          setOptionalColumnWidths((prev) => ({ ...prev, [key]: nextWidth }));
+        }
       }
     };
 
@@ -301,7 +328,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
       document.body.style.removeProperty('user-select');
       document.body.style.removeProperty('cursor');
     };
-  }, [onWidthChange, width, activityColumnMinWidth]);
+  }, [onWidthChange, width]);
 
   const startResize = (event: React.MouseEvent<HTMLDivElement>) => {
     dragStateRef.current = {
@@ -313,18 +340,33 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
     document.body.style.cursor = 'col-resize';
   };
 
-  const startColumnResize = (event: React.MouseEvent<HTMLDivElement>) => {
+  const startColumnResize = (column: ResizableColumnKey) => (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
 
+    const startWidth = column === 'name' ? nameColumnWidth : optionalColumnWidths[column];
     columnDragStateRef.current = {
+      column,
       startX: event.clientX,
-      startWidth: activityColumnWidth,
+      startWidth,
     };
 
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
   };
+
+  // Boundary x-positions for per-column resize handles (cumulative from left).
+  // The last boundary equals activityColumnWidth (section/timeline divider).
+  const columnBoundaries = useMemo(() => {
+    const boundaries: Array<{ key: ResizableColumnKey; x: number }> = [];
+    let x = nameColumnWidth;
+    boundaries.push({ key: 'name', x });
+    for (const key of visibleColumns) {
+      x += optionalColumnWidths[key];
+      boundaries.push({ key, x });
+    }
+    return boundaries;
+  }, [nameColumnWidth, visibleColumns, optionalColumnWidths]);
 
   // Use shared hooks
   const timeline = useTimeline({
@@ -853,19 +895,53 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
             )}
 
             {relationships.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setLinksMode((previous) => (previous === 'none' ? 'all' : 'none'))}
-                className={`h-[26px] w-[26px] rounded-full border flex items-center justify-center transition-colors ${
-                  linksMode !== 'none'
-                    ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
-                    : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
-                }`}
-                title={linksMode !== 'none' ? 'Hide links' : 'Show links'}
-                aria-label={linksMode !== 'none' ? 'Hide links' : 'Show links'}
-              >
-                <GitBranch className="h-3.5 w-3.5" />
-              </button>
+              <div className="relative group">
+                <button
+                  type="button"
+                  onClick={() => setLinksMode((previous) => (previous === 'none' ? 'all' : 'none'))}
+                  className={`h-[26px] px-2 rounded-full border flex items-center gap-1 text-xs transition-colors ${
+                    linksMode !== 'none'
+                      ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
+                      : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
+                  }`}
+                  title={linksMode !== 'none' ? 'Hide links' : 'Show links'}
+                  aria-label={linksMode !== 'none' ? 'Hide links' : 'Show links'}
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
+                  <span>
+                    {linksMode === 'none'
+                      ? 'Links'
+                      : linksMode === 'selected'
+                        ? 'Links (Selected)'
+                        : linksMode === 'critical'
+                          ? 'Links (Critical)'
+                          : 'Links (All)'}
+                  </span>
+                </button>
+
+                <div className="absolute left-0 top-full mt-1 min-w-44 rounded-md border border-dark-600 bg-[#0d1117] shadow-lg opacity-0 invisible translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0 z-50">
+                  {LINKS_MODE_OPTIONS.map((opt, index) => {
+                    const disabled = opt.key === 'selected' && selectedItemId === null;
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => setLinksMode(opt.key)}
+                        title={opt.title}
+                        className={`w-full text-left px-3 py-2 text-xs transition-colors disabled:text-gray-600 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
+                          linksMode === opt.key
+                            ? 'text-blue-300 bg-blue-500/10'
+                            : 'text-gray-200 hover:bg-dark-700/70'
+                        } ${index === 0 ? 'rounded-t-md' : ''} ${index === LINKS_MODE_OPTIONS.length - 1 ? 'rounded-b-md' : ''}`}
+                      >
+                        <span className="mr-2">{linksMode === opt.key ? '●' : '○'}</span>
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
 
             {data.has_baseline && (
@@ -943,21 +1019,31 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
           </div>
         ) : (
           <div data-gantt-printable className="min-w-[500px] flex flex-col flex-1 overflow-hidden relative">
-            <div
-              className="absolute top-0 bottom-0 w-2 cursor-col-resize z-20"
-              style={{ left: `${activityColumnWidth - 4}px` }}
-              onMouseDown={startColumnResize}
-              aria-label="Resize activity column"
-              role="separator"
-              aria-orientation="vertical"
-            />
+            {columnBoundaries.map((boundary) => (
+              <div
+                key={`resize-${boundary.key}`}
+                data-gantt-no-print
+                className="absolute top-0 bottom-0 w-2 cursor-col-resize z-20 hover:bg-blue-500/20 transition-colors"
+                style={{ left: `${boundary.x - 4}px` }}
+                onMouseDown={startColumnResize(boundary.key)}
+                aria-label={
+                  boundary.key === 'name'
+                    ? 'Resize activity name column'
+                    : `Resize ${boundary.key} column`
+                }
+                role="separator"
+                aria-orientation="vertical"
+              />
+            ))}
             {/* Timeline header - STICKY, not virtualized */}
             <div className="sticky top-0 z-10 bg-[#0d1117]">
               <TimelineHeader
                 months={timeline.months}
                 yearGroups={timeline.yearGroups}
                 activityColumnWidth={activityColumnWidth}
+                nameColumnWidth={nameColumnWidth}
                 visibleColumns={visibleColumns}
+                optionalColumnWidths={optionalColumnWidths}
               />
             </div>
 
@@ -993,7 +1079,9 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                           <HierarchicalRow
                             item={item}
                             activityColumnWidth={activityColumnWidth}
+                            nameColumnWidth={nameColumnWidth}
                             visibleColumns={visibleColumns}
+                            optionalColumnWidths={optionalColumnWidths}
                             canCollapse={canCollapse}
                             isCollapsed={isCollapsed}
                             onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
@@ -1031,7 +1119,9 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                       <HierarchicalRow
                         item={item}
                         activityColumnWidth={activityColumnWidth}
+                        nameColumnWidth={nameColumnWidth}
                         visibleColumns={visibleColumns}
+                        optionalColumnWidths={optionalColumnWidths}
                         canCollapse={canCollapse}
                         isCollapsed={isCollapsed}
                         onToggleCollapse={() => toggleSummaryCollapse(summaryKey)}
@@ -1080,9 +1170,6 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
         hasUpdates={updatesMap.hasUpdates}
         showUpdates={showUpdates}
         hasBaselineUpdates={baselineUpdatesMap.hasUpdates}
-        linksMode={linksMode}
-        onLinksModeChange={setLinksMode}
-        hasSelection={selectedItemId !== null}
         onPrintClick={handlePrint}
         printDisabled={visibleItems.length === 0 || isViewLoading}
         printButtonRef={printButtonRef}
@@ -1097,7 +1184,9 @@ interface TimelineHeaderProps {
   months: TimelineMonth[];
   yearGroups: YearGroup[];
   activityColumnWidth: number;
+  nameColumnWidth: number;
   visibleColumns: OptionalColumnKey[];
+  optionalColumnWidths: Record<OptionalColumnKey, number>;
 }
 
 interface HeaderMetaItem {
@@ -1121,12 +1210,7 @@ function HeaderMeta({ items }: HeaderMetaProps) {
   );
 }
 
-function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumns }: TimelineHeaderProps) {
-  const activityNameColumnWidth = Math.max(
-    BASE_ACTIVITY_COLUMN_WIDTH,
-    activityColumnWidth - (visibleColumns.length * OPTIONAL_COLUMN_WIDTH)
-  );
-
+function TimelineHeader({ months, yearGroups, activityColumnWidth, nameColumnWidth, visibleColumns, optionalColumnWidths }: TimelineHeaderProps) {
   return (
     <div className="mb-4">
       {/* Year row */}
@@ -1147,7 +1231,7 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumn
       {/* Month row */}
       <div className="flex border-b border-dark-600 pb-2">
         <div className="shrink-0 flex items-center text-xs font-medium text-gray-400" style={{ width: `${activityColumnWidth}px` }}>
-          <div className="truncate px-2 text-center" style={{ width: `${activityNameColumnWidth}px` }}>
+          <div className="truncate px-2 text-center" style={{ width: `${nameColumnWidth}px` }}>
             Activity
           </div>
           {visibleColumns.map((columnKey) => {
@@ -1156,7 +1240,7 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumn
               <div
                 key={columnKey}
                 className="truncate px-2 text-center"
-                style={{ width: `${OPTIONAL_COLUMN_WIDTH}px` }}
+                style={{ width: `${optionalColumnWidths[columnKey]}px` }}
                 title={label}
               >
                 {label}
@@ -1182,7 +1266,9 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, visibleColumn
 interface HierarchicalRowProps {
   item: PositionedItem;
   activityColumnWidth: number;
+  nameColumnWidth: number;
   visibleColumns: OptionalColumnKey[];
+  optionalColumnWidths: Record<OptionalColumnKey, number>;
   canCollapse: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -1198,7 +1284,9 @@ interface HierarchicalRowProps {
 function HierarchicalRow({
   item,
   activityColumnWidth,
+  nameColumnWidth,
   visibleColumns,
+  optionalColumnWidths,
   canCollapse,
   isCollapsed,
   onToggleCollapse,
@@ -1216,10 +1304,6 @@ function HierarchicalRow({
   const us = ganttStyleSettings.updates;
   const bus = ganttStyleSettings.baselineUpdates;
   const hasBaseline = item.baselineStartPercentage !== undefined && item.baselineWidthPercentage !== undefined;
-  const activityNameColumnWidth = Math.max(
-    BASE_ACTIVITY_COLUMN_WIDTH,
-    activityColumnWidth - (visibleColumns.length * OPTIONAL_COLUMN_WIDTH)
-  );
 
   return (
     <div
@@ -1230,7 +1314,7 @@ function HierarchicalRow({
     >
       {/* Activity label with indentation */}
       <div className="shrink-0 pr-2 flex items-center" style={{ width: `${activityColumnWidth}px` }}>
-        <div className="flex items-center min-w-0" style={{ width: `${activityNameColumnWidth}px`, paddingLeft: `${indentPx}px` }}>
+        <div className="flex items-center min-w-0" style={{ width: `${nameColumnWidth}px`, paddingLeft: `${indentPx}px` }}>
           {isSummary ? (
             <button
               type="button"
@@ -1267,7 +1351,7 @@ function HierarchicalRow({
           <div
             key={`${item.id}-${columnKey}`}
             className="shrink-0 px-2 text-xs text-gray-300 text-center truncate"
-            style={{ width: `${OPTIONAL_COLUMN_WIDTH}px` }}
+            style={{ width: `${optionalColumnWidths[columnKey]}px` }}
             title={formatOptionalColumnValue(item, columnKey)}
           >
             {formatOptionalColumnValue(item, columnKey)}
@@ -1561,15 +1645,9 @@ interface LegendProps {
   onPrintClick?: () => void;
   printDisabled?: boolean;
   printButtonRef?: React.RefObject<HTMLButtonElement | null>;
-  /** Current relationship arrow visibility mode. */
-  linksMode?: LinksMode;
-  /** Callback to change the visibility mode. */
-  onLinksModeChange?: (mode: LinksMode) => void;
-  /** Whether an activity is currently selected (controls 'Selected' tab affordance). */
-  hasSelection?: boolean;
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, onPrintClick, printDisabled, printButtonRef, linksMode, onLinksModeChange, hasSelection }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, onPrintClick, printDisabled, printButtonRef }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
   const bus = ganttStyleSettings.baselineUpdates;
@@ -1602,37 +1680,6 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
         {hasRelationships && (
           <>
             <div className="w-px h-3 bg-dark-600 mx-1"></div>
-            {linksMode && onLinksModeChange && (
-              <div
-                className="inline-flex items-center rounded border border-dark-600 overflow-hidden"
-                role="group"
-                aria-label="Relationship arrows visibility"
-              >
-                {LINKS_MODE_OPTIONS.map((opt) => {
-                  const active = linksMode === opt.key;
-                  const disabled = opt.key === 'selected' && !hasSelection && !active;
-                  return (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => onLinksModeChange(opt.key)}
-                      disabled={disabled}
-                      title={opt.title}
-                      aria-pressed={active}
-                      className={`px-2 py-0.5 text-[11px] transition-colors ${
-                        active
-                          ? 'bg-blue-600/70 text-white'
-                          : disabled
-                            ? 'text-gray-600 cursor-not-allowed'
-                            : 'text-gray-300 hover:bg-dark-700'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
             <div className="flex items-center gap-1">
               <svg className="w-4 h-3" viewBox="0 0 16 12">
                 <line x1="0" y1="6" x2="12" y2="6" stroke="#EF4444" strokeWidth="2" />

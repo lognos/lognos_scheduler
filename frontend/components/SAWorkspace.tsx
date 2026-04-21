@@ -121,7 +121,7 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
     const [layoutMode, setLayoutMode] = useState<SAWorkspaceMode>(() =>
         readStored<SAWorkspaceMode>(storageKeys.mode, (raw) =>
             validModes.includes(raw as SAWorkspaceMode) ? (raw as SAWorkspaceMode) : null,
-        ) ?? 'gantt-full-chat-floating'
+        ) ?? 'gantt-main-chat-side'
     );
     const [lastDockedMode, setLastDockedMode] = useState<SADockedMode>(() =>
         readStored<SADockedMode>(storageKeys.lastDocked, (raw) =>

@@ -6,7 +6,7 @@
  * for critical path relationships.
  */
 
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { ScheduleRelationship } from '@/types/schedule';
 import { PositionedItem, useRelationshipPaths, RelationshipPath } from './hooks';
 
@@ -33,14 +33,6 @@ interface TooltipState {
 // Arrow marker dimensions
 const ARROW_HEAD_WIDTH = 6;
 const ARROW_HEAD_HEIGHT = 5;
-
-// Relationship type labels
-const REL_TYPE_LABELS: Record<string, string> = {
-  FS: 'Finish-to-Start',
-  SS: 'Start-to-Start',
-  FF: 'Finish-to-Finish',
-  SF: 'Start-to-Finish',
-};
 
 /**
  * RelationshipArrows renders an SVG overlay with dependency arrows.
@@ -95,6 +87,15 @@ export function RelationshipArrows({
     showCriticalOnly,
     containerWidth,
   });
+
+  // Lookup map: activity code (s_item_id) → activity name (s_item)
+  const itemNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    items.forEach((item) => {
+      map.set(String(item.s_item_id), item.s_item);
+    });
+    return map;
+  }, [items]);
 
   const handleMouseEnter = useCallback((e: React.MouseEvent, pathData: RelationshipPath) => {
     const wrapper = wrapperRef.current;
@@ -239,36 +240,53 @@ export function RelationshipArrows({
       {/* Tooltip */}
       {tooltip.visible && tooltip.relationship && (
         <div
-          className="absolute z-50 px-3 py-2 text-xs bg-dark-800 border border-dark-600 rounded-lg shadow-xl pointer-events-none"
+          className="absolute z-50 min-w-[260px] max-w-[360px] rounded-md border border-dark-600 bg-[#0d1117] shadow-lg pointer-events-none px-3 py-2"
           style={{
             left: tooltip.x + 12,
             top: tooltip.y - 10,
             transform: 'translateY(-100%)',
           }}
+          role="tooltip"
         >
-          <div className="flex flex-col gap-1 text-gray-300 whitespace-nowrap">
-            <div className="flex gap-2">
-              <span className="text-gray-500">Predecessor:</span>
-              <span className="font-medium text-white">{tooltip.relationship.pred_id}</span>
+          <div className="flex flex-col gap-1.5">
+            {/* Header: FS + lag */}
+            <div
+              className={`text-xs font-medium ${
+                tooltip.relationship.is_critical ? 'text-red-400' : 'text-gray-200'
+              }`}
+            >
+              {tooltip.relationship.rel_type}
+              {tooltip.relationship.lag_days !== 0 && (
+                <span
+                  className={`ml-1 ${
+                    tooltip.relationship.lag_days > 0 ? 'text-amber-400' : 'text-blue-400'
+                  }`}
+                >
+                  {tooltip.relationship.lag_days > 0 ? '+' : ''}
+                  {tooltip.relationship.lag_days}d
+                </span>
+              )}
             </div>
-            <div className="flex gap-2">
-              <span className="text-gray-500">Successor:</span>
-              <span className="font-medium text-white">{tooltip.relationship.succ_id}</span>
-            </div>
-            <div className="flex gap-2">
-              <span className="text-gray-500">Type:</span>
-              <span className="font-medium text-white">
-                {tooltip.relationship.rel_type} ({REL_TYPE_LABELS[tooltip.relationship.rel_type]})
+
+            {/* Predecessor */}
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-mono text-blue-300 shrink-0">
+                {tooltip.relationship.pred_id}
+              </span>
+              <span className="text-xs text-gray-200 truncate">
+                {itemNameMap.get(String(tooltip.relationship.pred_id)) ?? '—'}
               </span>
             </div>
-            {tooltip.relationship.lag_days !== 0 && (
-              <div className="flex gap-2">
-                <span className="text-gray-500">Lag:</span>
-                <span className={`font-medium ${tooltip.relationship.lag_days > 0 ? 'text-amber-400' : 'text-blue-400'}`}>
-                  {tooltip.relationship.lag_days > 0 ? '+' : ''}{tooltip.relationship.lag_days}d
-                </span>
-              </div>
-            )}
+
+            {/* Successor */}
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-mono text-blue-300 shrink-0">
+                {tooltip.relationship.succ_id}
+              </span>
+              <span className="text-xs text-gray-200 truncate">
+                {itemNameMap.get(String(tooltip.relationship.succ_id)) ?? '—'}
+              </span>
+            </div>
           </div>
         </div>
       )}
