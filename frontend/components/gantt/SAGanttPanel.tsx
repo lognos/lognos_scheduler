@@ -83,6 +83,25 @@ const OPTIONAL_COLUMN_WIDTH = 108;
 
 type OptionalColumnKey = 'start' | 'finish' | 'float' | 'progress';
 
+/**
+ * Visibility mode for relationship arrows.
+ *  - 'none'     : hide all arrows
+ *  - 'selected' : only arrows touching the currently selected activity
+ *  - 'critical' : only critical-path arrows
+ *  - 'all'      : every arrow whose endpoints are currently rendered (default)
+ *
+ * In every mode, arrows whose pred/succ are hidden by a collapsed summary are
+ * already filtered out by `useRelationshipPaths` (endpoints absent from `items`).
+ */
+type LinksMode = 'none' | 'selected' | 'critical' | 'all';
+
+const LINKS_MODE_OPTIONS: ReadonlyArray<{ key: LinksMode; label: string; title: string }> = [
+  { key: 'none', label: 'None', title: 'Hide all relationship arrows' },
+  { key: 'selected', label: 'Selected', title: 'Show arrows touching the selected activity (click a bar to select)' },
+  { key: 'critical', label: 'Critical', title: 'Show only critical-path arrows' },
+  { key: 'all', label: 'All', title: 'Show all arrows for currently visible activities' },
+];
+
 interface OptionalColumnOption {
   key: OptionalColumnKey;
   label: string;
@@ -198,17 +217,21 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   isViewLoading = false,
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
-  const [showLinks, setShowLinks] = useState<boolean>(
-    () => data.capabilities?.links?.render_enabled ?? false
+  const [linksMode, setLinksMode] = useState<LinksMode>(
+    () => (data.capabilities?.links?.render_enabled === false ? 'none' : 'all')
   );
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [showBaseline, setShowBaseline] = useState<boolean>(true);
   const [baselineMode, setBaselineMode] = useState<BaselineMode>(data.baseline_mode || 'own');
 
-  // Sync showLinks when backend sends new data with render_enabled hint
+  // Sync linksMode when backend sends new data with render_enabled hint.
+  // Only forces 'none' when the backend explicitly disables; otherwise preserves user choice.
   useEffect(() => {
     const backendHint = data.capabilities?.links?.render_enabled;
-    if (backendHint !== undefined) {
-      setShowLinks(backendHint);
+    if (backendHint === false) {
+      setLinksMode('none');
+    } else if (backendHint === true) {
+      setLinksMode((prev) => (prev === 'none' ? 'all' : prev));
     }
   }, [data]);
   const [showUpdates, setShowUpdates] = useState<boolean>(true);
@@ -400,9 +423,25 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   const isLevel2State = level2CollapsibleSummaryKeys.size > 0 && areSetsEqual(collapsedSummaryKeys, level2CollapsibleSummaryKeys);
   const isExpandAllState = collapsedSummaryKeys.size === 0;
   const relationships = data.relationships ?? [];
+
+  // Filter relationships by current display mode.
+  // The hook still drops paths whose endpoints aren't in `visibleItems` (collapsed branches),
+  // so this only narrows the candidate set for performance and clarity.
+  const displayRelationships = useMemo(() => {
+    if (linksMode === 'none' || relationships.length === 0) return [];
+    if (linksMode === 'critical') return relationships.filter((r) => r.is_critical);
+    if (linksMode === 'selected') {
+      if (!selectedItemId) return [];
+      return relationships.filter(
+        (r) => String(r.pred_id) === selectedItemId || String(r.succ_id) === selectedItemId,
+      );
+    }
+    return relationships;
+  }, [linksMode, relationships, selectedItemId]);
+
   // DEBUG: log relationship data reaching frontend
   if (relationships.length > 0) {
-    console.log('[GanttPanel] relationships:', relationships.length, 'showLinks:', showLinks, 'sample:', relationships.slice(0, 3));
+    console.log('[GanttPanel] relationships:', relationships.length, 'mode:', linksMode, 'shown:', displayRelationships.length);
   } else {
     console.log('[GanttPanel] NO relationships in data. data keys:', Object.keys(data), 'capabilities:', data.capabilities?.links);
   }
@@ -514,6 +553,36 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const scrollTop = parentRef.current?.scrollTop ?? 0;
+
+  // Viewport-aware relationship culling: only keep arrows whose predecessor OR
+  // successor is currently rendered (within the virtualizer window + buffer).
+  // Without this, long-vertical arrows from off-screen rows still cut through
+  // the visible area because their SVG paths are computed for every visibleItem.
+  const VIEWPORT_REL_BUFFER_ROWS = 8;
+  const viewportItemIds = useMemo(() => {
+    if (isPrinting || virtualRows.length === 0) {
+      // When printing (or no virtual rows yet), allow all visibleItems.
+      return null;
+    }
+    const firstIdx = Math.max(0, virtualRows[0].index - VIEWPORT_REL_BUFFER_ROWS);
+    const lastIdx = Math.min(
+      visibleItems.length - 1,
+      virtualRows[virtualRows.length - 1].index + VIEWPORT_REL_BUFFER_ROWS,
+    );
+    const ids = new Set<string>();
+    for (let i = firstIdx; i <= lastIdx; i += 1) {
+      const item = visibleItems[i];
+      if (item) ids.add(String(item.s_item_id));
+    }
+    return ids;
+  }, [virtualRows, visibleItems, isPrinting]);
+
+  const viewportRelationships = useMemo(() => {
+    if (!viewportItemIds || displayRelationships.length === 0) return displayRelationships;
+    return displayRelationships.filter(
+      (r) => viewportItemIds.has(String(r.pred_id)) || viewportItemIds.has(String(r.succ_id)),
+    );
+  }, [displayRelationships, viewportItemIds]);
 
   const summaryContextMeta = useMemo(() => buildSummaryContextMeta(visibleItems), [visibleItems]);
 
@@ -786,14 +855,14 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
             {relationships.length > 0 && (
               <button
                 type="button"
-                onClick={() => setShowLinks((previous) => !previous)}
+                onClick={() => setLinksMode((previous) => (previous === 'none' ? 'all' : 'none'))}
                 className={`h-[26px] w-[26px] rounded-full border flex items-center justify-center transition-colors ${
-                  showLinks
+                  linksMode !== 'none'
                     ? 'border-blue-500 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20'
                     : 'border-dark-600 text-gray-500 hover:bg-dark-700/60'
                 }`}
-                title={showLinks ? 'Hide links' : 'Show links'}
-                aria-label={showLinks ? 'Hide links' : 'Show links'}
+                title={linksMode !== 'none' ? 'Hide links' : 'Show links'}
+                aria-label={linksMode !== 'none' ? 'Hide links' : 'Show links'}
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
@@ -931,6 +1000,8 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                             showBaseline={showBaseline && !!data.has_baseline}
                             activityUpdates={showUpdates ? updatesMap.byActivity.get(item.s_item_id) : undefined}
                             baselineActivityUpdates={showUpdates ? baselineUpdatesMap.byActivity.get(item.s_item_id) : undefined}
+                            isSelected={selectedItemId === String(item.s_item_id)}
+                            onSelect={(id) => setSelectedItemId((prev) => (prev === id ? null : id))}
                           />
                         </div>
                       );
@@ -967,13 +1038,15 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                         showBaseline={showBaseline && !!data.has_baseline}
                         activityUpdates={showUpdates ? updatesMap.byActivity.get(item.s_item_id) : undefined}
                         baselineActivityUpdates={showUpdates ? baselineUpdatesMap.byActivity.get(item.s_item_id) : undefined}
+                        isSelected={selectedItemId === String(item.s_item_id)}
+                        onSelect={(id) => setSelectedItemId((prev) => (prev === id ? null : id))}
                       />
                     </div>
                   );
                 })}
 
                 {/* Relationship arrows overlay - positioned over timeline area only */}
-                {relationships.length > 0 && showLinks && (
+                {viewportRelationships.length > 0 && (
                   <div 
                     className="absolute top-0 bottom-0"
                     style={{ 
@@ -983,7 +1056,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                   >
                     <RelationshipArrows
                       items={visibleItems}
-                      relationships={relationships}
+                      relationships={viewportRelationships}
                       rowHeight={ROW_HEIGHT_PX}
                       showCriticalOnly={false}
                       totalHeight={rowVirtualizer.getTotalSize()}
@@ -1007,6 +1080,9 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
         hasUpdates={updatesMap.hasUpdates}
         showUpdates={showUpdates}
         hasBaselineUpdates={baselineUpdatesMap.hasUpdates}
+        linksMode={linksMode}
+        onLinksModeChange={setLinksMode}
+        hasSelection={selectedItemId !== null}
         onPrintClick={handlePrint}
         printDisabled={visibleItems.length === 0 || isViewLoading}
         printButtonRef={printButtonRef}
@@ -1113,6 +1189,10 @@ interface HierarchicalRowProps {
   showBaseline: boolean;
   activityUpdates?: ActivityUpdate[];
   baselineActivityUpdates?: ActivityUpdate[];
+  /** Whether this row is the currently selected activity (for 'selected' link mode). */
+  isSelected?: boolean;
+  /** Click handler invoked with the row's s_item_id (toggles selection). */
+  onSelect?: (sItemId: string) => void;
 }
 
 function HierarchicalRow({
@@ -1125,6 +1205,8 @@ function HierarchicalRow({
   showBaseline,
   activityUpdates,
   baselineActivityUpdates,
+  isSelected = false,
+  onSelect,
 }: HierarchicalRowProps) {
   const isSummary = item.is_summary === true;
   const isMilestone = !isSummary && (item.working_days === 0 || item.calendar_days === 0);
@@ -1140,14 +1222,22 @@ function HierarchicalRow({
   );
 
   return (
-    <div className={`flex items-center group h-full ${isSummary ? 'bg-[#0d1117]' : ''}`}>
+    <div
+      className={`flex items-center group h-full ${isSummary ? 'bg-[#0d1117]' : ''} ${
+        isSelected ? 'ring-1 ring-inset ring-blue-400/70 bg-blue-500/10' : ''
+      } ${onSelect ? 'cursor-pointer' : ''}`}
+      onClick={onSelect ? () => onSelect(String(item.s_item_id)) : undefined}
+    >
       {/* Activity label with indentation */}
       <div className="shrink-0 pr-2 flex items-center" style={{ width: `${activityColumnWidth}px` }}>
         <div className="flex items-center min-w-0" style={{ width: `${activityNameColumnWidth}px`, paddingLeft: `${indentPx}px` }}>
           {isSummary ? (
             <button
               type="button"
-              onClick={onToggleCollapse}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCollapse();
+              }}
               disabled={!canCollapse}
               className={`mr-1 h-4 w-4 flex items-center justify-center rounded transition-colors ${
                 canCollapse ? 'text-gray-300 hover:bg-dark-700 hover:text-white' : 'text-gray-600'
@@ -1471,9 +1561,15 @@ interface LegendProps {
   onPrintClick?: () => void;
   printDisabled?: boolean;
   printButtonRef?: React.RefObject<HTMLButtonElement | null>;
+  /** Current relationship arrow visibility mode. */
+  linksMode?: LinksMode;
+  /** Callback to change the visibility mode. */
+  onLinksModeChange?: (mode: LinksMode) => void;
+  /** Whether an activity is currently selected (controls 'Selected' tab affordance). */
+  hasSelection?: boolean;
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, onPrintClick, printDisabled, printButtonRef }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, onPrintClick, printDisabled, printButtonRef, linksMode, onLinksModeChange, hasSelection }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
   const bus = ganttStyleSettings.baselineUpdates;
@@ -1506,6 +1602,37 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
         {hasRelationships && (
           <>
             <div className="w-px h-3 bg-dark-600 mx-1"></div>
+            {linksMode && onLinksModeChange && (
+              <div
+                className="inline-flex items-center rounded border border-dark-600 overflow-hidden"
+                role="group"
+                aria-label="Relationship arrows visibility"
+              >
+                {LINKS_MODE_OPTIONS.map((opt) => {
+                  const active = linksMode === opt.key;
+                  const disabled = opt.key === 'selected' && !hasSelection && !active;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => onLinksModeChange(opt.key)}
+                      disabled={disabled}
+                      title={opt.title}
+                      aria-pressed={active}
+                      className={`px-2 py-0.5 text-[11px] transition-colors ${
+                        active
+                          ? 'bg-blue-600/70 text-white'
+                          : disabled
+                            ? 'text-gray-600 cursor-not-allowed'
+                            : 'text-gray-300 hover:bg-dark-700'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div className="flex items-center gap-1">
               <svg className="w-4 h-3" viewBox="0 0 16 12">
                 <line x1="0" y1="6" x2="12" y2="6" stroke="#EF4444" strokeWidth="2" />
