@@ -340,7 +340,7 @@ class GanttRenderOptions(BaseModel):
     """Optional render intent for custom Gantt views."""
     model_config = ConfigDict(strict=True)
 
-    columns: list[Literal["start", "finish", "total_float", "percent_complete"]] | None = Field(
+    columns: list[Literal["start", "finish", "duration", "total_float", "percent_complete"]] | None = Field(
         default=None,
         description="Optional list of columns requested by the client for rendering."
     )

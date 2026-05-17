@@ -270,8 +270,8 @@ def build_v2_gantt_payload(
     include_updates = bool(data_envelope_options.get("include_updates", True))
     requested_baselines = data_envelope_options.get("include_baselines") or ["own"]
 
-    columns_selected = render_options.get("columns") or ["start", "finish", "total_float", "percent_complete"]
-    columns_available = ["start", "finish", "total_float", "percent_complete"]
+    columns_selected = render_options.get("columns") or ["start", "finish", "duration", "total_float", "percent_complete"]
+    columns_available = ["start", "finish", "duration", "total_float", "percent_complete"]
 
     if envelope_updates is None:
         envelope_updates = payload.get("activity_updates") or []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from hashlib import sha1
+import json
 from typing import Optional
 
 import logfire
@@ -20,7 +21,16 @@ from backend.services.gantt_payload_builder import (
 class ScheduleViewService:
     """Build and cache schedule views for instant UI switching."""
 
-    VIEW_KEYS = ("critical_path", "lookahead_4w", "full_schedule", "updates")
+    VIEW_KEYS = (
+        "critical_path",
+        "total_float_critical",
+        "near_critical",
+        "float_path_1",
+        "lookahead_4w",
+        "full_schedule",
+        "updates",
+    )
+    CACHE_METADATA_KEY = "cache_metadata"
 
     def __init__(
         self,
@@ -67,6 +77,168 @@ class ScheduleViewService:
             return False
 
     @staticmethod
+    def _as_float(raw: object, default: float = 0.0) -> float:
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _is_detail_item(item: dict) -> bool:
+        return item.get("id") is not None and not bool(item.get("is_summary", False))
+
+    @staticmethod
+    def _path_span_days(item: dict) -> float:
+        start_dt = item.get("start_dt")
+        finish_dt = item.get("finish_dt")
+        if not start_dt or not finish_dt:
+            return max(0.0, float(item.get("working_days") or 0))
+        return float(max(0, (finish_dt.date() - start_dt.date()).days) + 1)
+
+    @staticmethod
+    def _edge_elapsed_days(pred_item: dict, succ_item: dict) -> float:
+        pred_finish = pred_item.get("finish_dt")
+        succ_finish = succ_item.get("finish_dt")
+        if not pred_finish or not succ_finish:
+            return 0.0
+        return float(max(0, (succ_finish.date() - pred_finish.date()).days))
+
+    @classmethod
+    def _total_float_activity_ids(cls, parsed: list[dict], threshold: float) -> set[int]:
+        candidates = [item for item in parsed if cls._is_detail_item(item)]
+        selected = {
+            int(item["id"])
+            for item in candidates
+            if float(item.get("total_float") or 0) <= threshold
+        }
+        if selected or not candidates:
+            return selected
+
+        min_float = min(float(item.get("total_float") or 0) for item in candidates)
+        tolerance = 1e-9
+        return {
+            int(item["id"])
+            for item in candidates
+            if abs(float(item.get("total_float") or 0) - min_float) <= tolerance
+        }
+
+    @classmethod
+    def _select_path_target_ids(cls, activity_by_id: dict[int, dict], relationships: list[dict]) -> set[int]:
+        outgoing_ids = {
+            int(rel["pred_id"])
+            for rel in relationships
+            if rel.get("pred_id") is not None and int(rel.get("pred_id")) in activity_by_id
+        }
+        terminal_items = [item for item_id, item in activity_by_id.items() if item_id not in outgoing_ids]
+        candidates = terminal_items or list(activity_by_id.values())
+        dated_candidates = [item for item in candidates if item.get("finish_dt")]
+        if not dated_candidates:
+            return {int(item["id"]) for item in candidates if item.get("id") is not None}
+
+        latest_finish = max(item["finish_dt"].date() for item in dated_candidates)
+        return {
+            int(item["id"])
+            for item in dated_candidates
+            if item["finish_dt"].date() == latest_finish
+        }
+
+    @classmethod
+    def _longest_path_activity_ids(cls, parsed: list[dict], relationships: list[dict]) -> set[int]:
+        activity_by_id = {
+            int(item["id"]): item
+            for item in parsed
+            if cls._is_detail_item(item)
+        }
+        if not activity_by_id:
+            return set()
+
+        predecessors_by_succ: dict[int, list[int]] = {item_id: [] for item_id in activity_by_id}
+        for rel in relationships:
+            pred_id = rel.get("pred_id")
+            succ_id = rel.get("succ_id")
+            if pred_id is None or succ_id is None:
+                continue
+            pred_id = int(pred_id)
+            succ_id = int(succ_id)
+            if pred_id in activity_by_id and succ_id in activity_by_id:
+                predecessors_by_succ.setdefault(succ_id, []).append(pred_id)
+
+        score_cache: dict[int, float] = {}
+        visiting: set[int] = set()
+
+        def best_score(item_id: int) -> float:
+            if item_id in score_cache:
+                return score_cache[item_id]
+            if item_id in visiting:
+                return cls._path_span_days(activity_by_id[item_id])
+
+            visiting.add(item_id)
+            item = activity_by_id[item_id]
+            base_score = cls._path_span_days(item)
+            predecessor_scores = []
+            for pred_id in predecessors_by_succ.get(item_id, []):
+                pred_item = activity_by_id[pred_id]
+                predecessor_scores.append(
+                    best_score(pred_id) + cls._edge_elapsed_days(pred_item, item)
+                )
+            score_cache[item_id] = max([base_score, *predecessor_scores])
+            visiting.remove(item_id)
+            return score_cache[item_id]
+
+        selected: set[int] = set()
+        tolerance = 1e-9
+
+        def collect_best_predecessors(item_id: int) -> None:
+            if item_id in selected:
+                return
+            selected.add(item_id)
+            item = activity_by_id[item_id]
+            item_score = best_score(item_id)
+
+            best_pred_score = None
+            pred_scores: list[tuple[int, float]] = []
+            for pred_id in predecessors_by_succ.get(item_id, []):
+                pred_item = activity_by_id[pred_id]
+                pred_score = best_score(pred_id) + cls._edge_elapsed_days(pred_item, item)
+                pred_scores.append((pred_id, pred_score))
+                best_pred_score = pred_score if best_pred_score is None else max(best_pred_score, pred_score)
+
+            if best_pred_score is None:
+                return
+            if best_pred_score + tolerance < item_score:
+                return
+
+            for pred_id, pred_score in pred_scores:
+                if abs(pred_score - best_pred_score) <= tolerance:
+                    collect_best_predecessors(pred_id)
+
+        target_ids = cls._select_path_target_ids(activity_by_id, relationships)
+        target_scores = [(target_id, best_score(target_id)) for target_id in target_ids]
+        if not target_scores:
+            return set()
+        max_target_score = max(score for _, score in target_scores)
+        for target_id, target_score in target_scores:
+            if abs(target_score - max_target_score) <= tolerance:
+                collect_best_predecessors(target_id)
+        return selected
+
+    @classmethod
+    def _critical_activity_ids_for_config(
+        cls,
+        parsed: list[dict],
+        relationships: list[dict],
+        config: dict,
+    ) -> set[int]:
+        definition = str(config.get("critical_definition") or "total_float")
+        if definition in {"longest_path", "free_float_path"}:
+            return cls._longest_path_activity_ids(parsed, relationships)
+
+        threshold = cls._as_float(config.get("float_threshold_d"), 0.0)
+        return cls._total_float_activity_ids(parsed, threshold)
+
+    @staticmethod
     def _wbs_level(wbs: str | None) -> int:
         if not wbs:
             return 1
@@ -87,20 +259,80 @@ class ScheduleViewService:
             return True
         return len(items) == 0
 
+    @staticmethod
+    def _relationship_signature_matches(payload: dict, relationship_signature: dict | None) -> bool:
+        if relationship_signature is None:
+            return True
+        metadata = payload.get(ScheduleViewService.CACHE_METADATA_KEY)
+        if not isinstance(metadata, dict):
+            return False
+        return metadata.get("relationship_signature") == relationship_signature
+
+    @staticmethod
+    def _view_config_signature(config: dict | None) -> str:
+        return sha1(
+            json.dumps(config or {}, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _view_config_signature_matches(payload: dict, config_signature: str | None) -> bool:
+        if config_signature is None:
+            return True
+        metadata = payload.get(ScheduleViewService.CACHE_METADATA_KEY)
+        if not isinstance(metadata, dict):
+            return False
+        return metadata.get("view_config_signature") == config_signature
+
     @classmethod
-    def _should_refresh_snapshot(cls, *, view_key: str, snapshot: Optional[dict]) -> bool:
+    def _should_refresh_snapshot(
+        cls,
+        *,
+        view_key: str,
+        snapshot: Optional[dict],
+        relationship_signature: dict | None = None,
+        config_signature: str | None = None,
+    ) -> bool:
         if snapshot is None:
             return True
         payload = snapshot.get("payload")
+        if not isinstance(payload, dict):
+            return True
         if view_key == "critical_path" and cls._is_effectively_empty_payload(payload):
             return True
         # Updates view is always recomputed (updates can arrive at any time)
         if view_key == "updates":
             return True
         # Refresh stale snapshots that predate the baseline feature
-        if isinstance(payload, dict) and "has_baseline" not in payload:
+        if "has_baseline" not in payload:
+            return True
+        if not cls._relationship_signature_matches(payload, relationship_signature):
+            return True
+        if not cls._view_config_signature_matches(payload, config_signature):
             return True
         return False
+
+    @classmethod
+    def _inject_cache_metadata(
+        cls,
+        payload: dict,
+        *,
+        relationship_signature: dict | None,
+        config_signature: str | None = None,
+    ) -> dict:
+        patched = dict(payload)
+        metadata = dict(patched.get(cls.CACHE_METADATA_KEY) or {})
+        if relationship_signature is not None:
+            metadata["relationship_signature"] = relationship_signature
+        if config_signature is not None:
+            metadata["view_config_signature"] = config_signature
+        patched[cls.CACHE_METADATA_KEY] = metadata
+        return patched
+
+    @staticmethod
+    def _payload_checksum(payload: dict) -> str:
+        return sha1(
+            json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     async def _build_cross_version_baseline(
         self, reference_version_id: int,
@@ -150,6 +382,35 @@ class ScheduleViewService:
         return {
             "critical_path": {
                 "critical_only": True,
+                "critical_definition": "longest_path",
+                "path_target": "project_finish",
+                "date_start": None,
+                "date_end": None,
+                "overlap_window": False,
+            },
+            "total_float_critical": {
+                "critical_only": True,
+                "critical_definition": "total_float",
+                "float_threshold_d": 0,
+                "date_start": None,
+                "date_end": None,
+                "overlap_window": False,
+            },
+            "near_critical": {
+                "critical_only": True,
+                "critical_definition": "total_float",
+                "float_threshold_d": 10,
+                "date_start": None,
+                "date_end": None,
+                "overlap_window": False,
+            },
+            "float_path_1": {
+                "critical_only": True,
+                "critical_definition": "free_float_path",
+                "float_path": 1,
+                "float_path_count": 1,
+                "float_path_method": "free_float",
+                "path_target": "project_finish",
                 "date_start": None,
                 "date_end": None,
                 "overlap_window": False,
@@ -197,7 +458,10 @@ class ScheduleViewService:
         definitions: list[dict] = []
         for view_key in self.VIEW_KEYS:
             view_name = {
-                "critical_path": "Critical Path",
+                "critical_path": "Critical Path (Longest Path)",
+                "total_float_critical": "Critical: Total Float <= 0",
+                "near_critical": "Near Critical (<= 10d Float)",
+                "float_path_1": "Float Path 1",
                 "lookahead_4w": "4-Week",
                 "full_schedule": "Full",
                 "updates": "Updates",
@@ -317,10 +581,20 @@ class ScheduleViewService:
                     item["baseline_finish_dt"] = None
                     item["baseline_duration_d"] = None
 
+        critical_activity_ids = self._critical_activity_ids_for_config(
+            parsed,
+            relationships,
+            config,
+        )
+        for item in parsed:
+            item["is_critical"] = self._is_detail_item(item) and int(item["id"]) in critical_activity_ids
+
         date_start = config.get("date_start")
         date_end = config.get("date_end")
         overlap_window = bool(config.get("overlap_window"))
         critical_only = bool(config.get("critical_only"))
+        critical_definition = str(config.get("critical_definition") or "total_float")
+        float_threshold_d = config.get("float_threshold_d")
 
         start_limit = date.fromisoformat(str(date_start)[:10]) if date_start else None
         end_limit = date.fromisoformat(str(date_end)[:10]) if date_end else None
@@ -488,8 +762,8 @@ class ScheduleViewService:
             id_to_code_all={int(k): str(v) for k, v in all_id_to_sitem.items()},
             visible_id_set={int(task_id) for task_id in filtered_id_set},
             is_critical_edge=lambda pred_id, succ_id: (
-                self._is_critical(activity_by_id.get(pred_id) or {})
-                and self._is_critical(activity_by_id.get(succ_id) or {})
+                pred_id in critical_activity_ids
+                and succ_id in critical_activity_ids
             ),
         )
 
@@ -555,6 +829,11 @@ class ScheduleViewService:
             "critical_path_length": float(critical_span),
             "filter_applied": {
                 "critical_only": critical_only,
+                "critical_definition": critical_definition,
+                "float_threshold_d": float_threshold_d,
+                "float_path": config.get("float_path"),
+                "float_path_method": config.get("float_path_method"),
+                "path_target": config.get("path_target"),
                 "date_start": date_start,
                 "date_end": date_end,
                 "wbs_path": None,
@@ -774,6 +1053,7 @@ class ScheduleViewService:
             version["version_number"],
             schedule_version_id,
         )
+        relationship_signature = await self.ms_repository.get_relationship_cache_signature(schedule_version_id)
 
         use_cross_baseline = baseline_mode != "own" and available_baseline_modes.get(baseline_mode, False)
 
@@ -781,19 +1061,30 @@ class ScheduleViewService:
         default_payload = None
         for definition in definitions:
             config = definition.get("config") or {}
+            config_signature = self._view_config_signature(config)
             snapshot = await self.view_repository.get_snapshot(
                 view_definition_id=definition["id"],
                 schedule_version_id=schedule_version_id,
             )
-            if use_cross_baseline or self._should_refresh_snapshot(view_key=definition["view_key"], snapshot=snapshot):
+            if use_cross_baseline or self._should_refresh_snapshot(
+                view_key=definition["view_key"],
+                snapshot=snapshot,
+                relationship_signature=relationship_signature,
+                config_signature=config_signature,
+            ):
                 payload = await self.build_view_payload(
                     schedule_version_id=schedule_version_id,
                     view_key=definition["view_key"],
                     config=config,
                     baseline_mode=baseline_mode if use_cross_baseline else "own",
                 )
+                payload = self._inject_cache_metadata(
+                    payload,
+                    relationship_signature=relationship_signature,
+                    config_signature=config_signature,
+                )
                 if not use_cross_baseline:
-                    checksum = sha1(str(payload).encode("utf-8")).hexdigest()
+                    checksum = self._payload_checksum(payload)
                     snapshot = await self.view_repository.upsert_snapshot(
                         view_definition_id=definition["id"],
                         schedule_version_id=schedule_version_id,
@@ -868,6 +1159,7 @@ class ScheduleViewService:
             version["version_number"],
             schedule_version_id,
         )
+        relationship_signature = await self.ms_repository.get_relationship_cache_signature(schedule_version_id)
         use_cross_baseline = baseline_mode != "own" and available_baseline_modes.get(baseline_mode, False)
 
         schedule_version_id = int(version["id"])
@@ -892,15 +1184,25 @@ class ScheduleViewService:
             schedule_version_id=schedule_version_id,
         )
 
-        if use_cross_baseline or self._should_refresh_snapshot(view_key=view_key, snapshot=snapshot):
+        if use_cross_baseline or self._should_refresh_snapshot(
+            view_key=view_key,
+            snapshot=snapshot,
+            relationship_signature=relationship_signature,
+            config_signature=self._view_config_signature(definition.get("config") or {}),
+        ):
             payload = await self.build_view_payload(
                 schedule_version_id=schedule_version_id,
                 view_key=view_key,
                 config=definition.get("config") or {},
                 baseline_mode=baseline_mode if use_cross_baseline else "own",
             )
+            payload = self._inject_cache_metadata(
+                payload,
+                relationship_signature=relationship_signature,
+                config_signature=self._view_config_signature(definition.get("config") or {}),
+            )
             if not use_cross_baseline:
-                checksum = sha1(str(payload).encode("utf-8")).hexdigest()
+                checksum = self._payload_checksum(payload)
                 snapshot = await self.view_repository.upsert_snapshot(
                     view_definition_id=definition["id"],
                     schedule_version_id=schedule_version_id,

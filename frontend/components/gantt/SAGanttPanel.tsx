@@ -14,7 +14,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { format, isValid, parseISO, differenceInDays } from 'date-fns';
-import { X, Calendar, AlertTriangle, GitBranch, ChevronRight, ChevronDown, Printer, Maximize2, Columns2, PanelLeft, PanelRight } from 'lucide-react';
+import { X, AlertTriangle, GitBranch, ChevronRight, ChevronDown, Printer, Maximize2, Columns2, PanelLeft, PanelRight } from 'lucide-react';
 import { GanttChartData, ScheduleViewKey, ScheduleViewMeta, ActivityUpdate, BaselineMode } from '@/types/schedule';
 import {
   SAWorkspaceMode,
@@ -81,8 +81,12 @@ const ROW_HEIGHT_PX = 36;
 const BASE_ACTIVITY_COLUMN_WIDTH = 192;
 const OPTIONAL_COLUMN_WIDTH = 108;
 const MIN_COLUMN_WIDTH = 60;
+const MIN_TIMELINE_SCALE = 0.5;
+const MAX_TIMELINE_SCALE = 4;
+const TIMELINE_SCALE_DRAG_PX = 260;
+const MIN_TIMELINE_WIDTH = 240;
 
-type OptionalColumnKey = 'start' | 'finish' | 'float' | 'progress';
+type OptionalColumnKey = 'start' | 'finish' | 'duration' | 'float' | 'progress';
 type ResizableColumnKey = 'name' | OptionalColumnKey;
 
 /**
@@ -112,9 +116,12 @@ interface OptionalColumnOption {
 const OPTIONAL_COLUMN_OPTIONS: OptionalColumnOption[] = [
   { key: 'start', label: 'Start' },
   { key: 'finish', label: 'Finish' },
+  { key: 'duration', label: 'Duration' },
   { key: 'float', label: 'Float' },
   { key: 'progress', label: 'Complete (%)' },
 ];
+
+const DEFAULT_VISIBLE_COLUMNS: OptionalColumnKey[] = ['start', 'finish', 'duration', 'float', 'progress'];
 
 function formatOptionalColumnValue(item: PositionedItem, column: OptionalColumnKey): string {
   switch (column) {
@@ -122,6 +129,8 @@ function formatOptionalColumnValue(item: PositionedItem, column: OptionalColumnK
       return formatProjectDate(item.start);
     case 'finish':
       return formatProjectDate(item.finish);
+    case 'duration':
+      return `${item.working_days.toFixed(1)}d`;
     case 'float':
       return `${item.total_float.toFixed(1)}d`;
     case 'progress': {
@@ -203,6 +212,10 @@ function areSetsEqual(first: Set<string>, second: Set<string>): boolean {
   return true;
 }
 
+function clampTimelineScale(value: number): number {
+  return Math.min(MAX_TIMELINE_SCALE, Math.max(MIN_TIMELINE_SCALE, value));
+}
+
 export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   data,
   onClose,
@@ -219,6 +232,8 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   isViewLoading = false,
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
+  const printableRef = useRef<HTMLDivElement>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
   const [linksMode, setLinksMode] = useState<LinksMode>(
     () => (data.capabilities?.links?.render_enabled === false ? 'none' : 'all')
   );
@@ -239,14 +254,18 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   const [showUpdates, setShowUpdates] = useState<boolean>(true);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnDragStateRef = useRef<{ column: ResizableColumnKey; startX: number; startWidth: number } | null>(null);
+  const timelineScaleDragStateRef = useRef<{ startX: number; startScale: number } | null>(null);
   const [nameColumnWidth, setNameColumnWidth] = useState<number>(BASE_ACTIVITY_COLUMN_WIDTH);
+  const [printableWidth, setPrintableWidth] = useState(0);
+  const [timelineScale, setTimelineScale] = useState(1);
   const [optionalColumnWidths, setOptionalColumnWidths] = useState<Record<OptionalColumnKey, number>>({
     start: OPTIONAL_COLUMN_WIDTH,
     finish: OPTIONAL_COLUMN_WIDTH,
+    duration: OPTIONAL_COLUMN_WIDTH,
     float: OPTIONAL_COLUMN_WIDTH,
     progress: OPTIONAL_COLUMN_WIDTH,
   });
-  const [visibleColumns, setVisibleColumns] = useState<OptionalColumnKey[]>(['start', 'finish', 'float', 'progress']);
+  const [visibleColumns, setVisibleColumns] = useState<OptionalColumnKey[]>(DEFAULT_VISIBLE_COLUMNS);
   const [collapsedSummaryKeys, setCollapsedSummaryKeys] = useState<Set<string>>(new Set());
   const [isPrinting, setIsPrinting] = useState(false);
   const printButtonRef = useRef<HTMLButtonElement>(null);
@@ -260,11 +279,12 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
     const details = width * 0.5;
     const name = Math.max(MIN_COLUMN_WIDTH, details * 0.3);
     const remaining = Math.max(0, details - name);
-    const perOptional = Math.max(MIN_COLUMN_WIDTH, remaining / 4);
+    const perOptional = Math.max(MIN_COLUMN_WIDTH, remaining / DEFAULT_VISIBLE_COLUMNS.length);
     setNameColumnWidth(name);
     setOptionalColumnWidths({
       start: perOptional,
       finish: perOptional,
+      duration: perOptional,
       float: perOptional,
       progress: perOptional,
     });
@@ -275,6 +295,34 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
     () => nameColumnWidth + visibleColumns.reduce((sum, key) => sum + optionalColumnWidths[key], 0),
     [nameColumnWidth, visibleColumns, optionalColumnWidths]
   );
+
+  useEffect(() => {
+    const printable = printableRef.current;
+    if (!printable) return;
+
+    const updatePrintableWidth = () => {
+      const nextWidth = Math.round(printable.getBoundingClientRect().width);
+      setPrintableWidth((previous) => (previous === nextWidth ? previous : nextWidth));
+    };
+
+    updatePrintableWidth();
+    const observer = new ResizeObserver(updatePrintableWidth);
+    observer.observe(printable);
+
+    return () => observer.disconnect();
+  }, []);
+
+  const timelineViewportWidth = useMemo(
+    () => Math.max(MIN_TIMELINE_WIDTH, (printableWidth || width || 0) - activityColumnWidth),
+    [activityColumnWidth, printableWidth, width]
+  );
+
+  const timelineContentWidth = useMemo(
+    () => Math.max(MIN_TIMELINE_WIDTH, timelineViewportWidth * timelineScale),
+    [timelineScale, timelineViewportWidth]
+  );
+
+  const ganttContentWidth = activityColumnWidth + timelineContentWidth;
 
   const toggleVisibleColumn = (column: OptionalColumnKey) => {
     setVisibleColumns((previous) => {
@@ -310,11 +358,18 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
           setOptionalColumnWidths((prev) => ({ ...prev, [key]: nextWidth }));
         }
       }
+
+      const timelineScaleDragState = timelineScaleDragStateRef.current;
+      if (timelineScaleDragState) {
+        const delta = event.clientX - timelineScaleDragState.startX;
+        setTimelineScale(clampTimelineScale(timelineScaleDragState.startScale + (delta / TIMELINE_SCALE_DRAG_PX)));
+      }
     };
 
     const handleMouseUp = () => {
       dragStateRef.current = null;
       columnDragStateRef.current = null;
+      timelineScaleDragStateRef.current = null;
       document.body.style.removeProperty('user-select');
       document.body.style.removeProperty('cursor');
     };
@@ -339,6 +394,19 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
   };
+
+  const startTimelineScaleDrag = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    timelineScaleDragStateRef.current = {
+      startX: event.clientX,
+      startScale: timelineScale,
+    };
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'ew-resize';
+  }, [timelineScale]);
 
   const startColumnResize = (column: ResizableColumnKey) => (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -464,7 +532,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   const isCollapseAllState = hasCollapsibleSummaries && collapsedSummaryKeys.size === collapsibleSummaryKeys.size;
   const isLevel2State = level2CollapsibleSummaryKeys.size > 0 && areSetsEqual(collapsedSummaryKeys, level2CollapsibleSummaryKeys);
   const isExpandAllState = collapsedSummaryKeys.size === 0;
-  const relationships = data.relationships ?? [];
+  const relationships = useMemo(() => data.relationships ?? [], [data.relationships]);
 
   // Filter relationships by current display mode.
   // The hook still drops paths whose endpoints aren't in `visibleItems` (collapsed branches),
@@ -481,12 +549,6 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
     return relationships;
   }, [linksMode, relationships, selectedItemId]);
 
-  // DEBUG: log relationship data reaching frontend
-  if (relationships.length > 0) {
-    console.log('[GanttPanel] relationships:', relationships.length, 'mode:', linksMode, 'shown:', displayRelationships.length);
-  } else {
-    console.log('[GanttPanel] NO relationships in data. data keys:', Object.keys(data), 'capabilities:', data.capabilities?.links);
-  }
   const activeView = activeViewKey
     ? availableViews.find((view) => view.view_key === activeViewKey)
     : null;
@@ -595,6 +657,30 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const scrollTop = parentRef.current?.scrollTop ?? 0;
+
+  const syncHeaderScroll = useCallback((scrollLeft: number) => {
+    if (headerScrollRef.current) {
+      headerScrollRef.current.scrollLeft = scrollLeft;
+    }
+  }, []);
+
+  const handleBodyScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    syncHeaderScroll(event.currentTarget.scrollLeft);
+  }, [syncHeaderScroll]);
+
+  useEffect(() => {
+    syncHeaderScroll(parentRef.current?.scrollLeft ?? 0);
+  }, [ganttContentWidth, syncHeaderScroll]);
+
+  const navigateToActivity = useCallback((sItemId: string) => {
+    const targetIndex = visibleItems.findIndex((item) => String(item.s_item_id) === String(sItemId));
+    if (targetIndex < 0) {
+      return;
+    }
+
+    setSelectedItemId(String(sItemId));
+    rowVirtualizer.scrollToIndex(targetIndex, { align: 'center' });
+  }, [visibleItems, rowVirtualizer]);
 
   // Viewport-aware relationship culling: only keep arrows whose predecessor OR
   // successor is currently rendered (within the virtualizer window + buffer).
@@ -718,69 +804,6 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
           aria-hidden="true"
         />
       )}
-      {/* Header */}
-      <div data-gantt-no-print className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-[#0d1117] rounded-t-xl">
-        <div className="flex items-center gap-4">
-          <Calendar className="h-5 w-5 text-blue-400" />
-          <h2 className="text-lg font-light text-white">Schedule</h2>
-          <HeaderMeta items={headerMetaItems} />
-        </div>
-        <div className="flex items-center gap-2">
-          {showMakeFull && (
-            <button
-              type="button"
-              onClick={layoutActions!.makeGanttFull}
-              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
-              title="Make Gantt full (chat floats)"
-              aria-label="Make Gantt full"
-            >
-              <Maximize2 className="h-4 w-4" />
-            </button>
-          )}
-          {showMakeSplit && (
-            <button
-              type="button"
-              onClick={layoutActions!.makeSplit}
-              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
-              title="Pin chat to side (split view)"
-              aria-label="Pin chat to side"
-            >
-              <Columns2 className="h-4 w-4" />
-            </button>
-          )}
-          {showSwapLeft && (
-            <button
-              type="button"
-              onClick={layoutActions!.swapSides}
-              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
-              title="Move Gantt to right"
-              aria-label="Move Gantt to right"
-            >
-              <PanelLeft className="h-4 w-4" />
-            </button>
-          )}
-          {showSwapRight && (
-            <button
-              type="button"
-              onClick={layoutActions!.swapSides}
-              className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
-              title="Move Gantt to left"
-              aria-label="Move Gantt to left"
-            >
-              <PanelRight className="h-4 w-4" />
-            </button>
-          )}
-          {showCloseButton && (
-            <button
-              onClick={onClose}
-              className="p-1 hover:bg-dark-700 rounded transition-colors"
-              aria-label="Close panel"
-            >
-              <X className="h-5 w-5 text-gray-400 hover:text-white" />
-            </button>
-          )}
-        </div>
-      </div>
 
       <div data-gantt-no-print className="relative z-40 px-4 py-2 bg-[#0d1117] border-b border-dark-700 text-xs flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -1007,6 +1030,80 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
             )}
 
             {isViewLoading && <span className="text-gray-500">Loading view...</span>}
+
+            {/* Layout + close controls (previously in the removed top header) */}
+            {(showMakeFull || showMakeSplit || showSwapLeft || showSwapRight || showCloseButton) && (
+              <div className="flex items-center gap-1 ml-1 pl-2 border-l border-dark-700">
+                <button
+                  ref={printButtonRef}
+                  type="button"
+                  onClick={handlePrint}
+                  disabled={visibleItems.length === 0 || isViewLoading}
+                  className={`p-1 rounded transition-colors ${
+                    visibleItems.length === 0 || isViewLoading
+                      ? 'opacity-30 cursor-not-allowed text-gray-400'
+                      : 'text-gray-400 hover:text-white hover:bg-dark-700'
+                  }`}
+                  title="Print schedule"
+                  aria-label="Print schedule"
+                >
+                  <Printer className="h-4 w-4" />
+                </button>
+                {showMakeFull && (
+                  <button
+                    type="button"
+                    onClick={layoutActions!.makeGanttFull}
+                    className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                    title="Make Gantt full (chat floats)"
+                    aria-label="Make Gantt full"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </button>
+                )}
+                {showMakeSplit && (
+                  <button
+                    type="button"
+                    onClick={layoutActions!.makeSplit}
+                    className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                    title="Pin chat to side (split view)"
+                    aria-label="Pin chat to side"
+                  >
+                    <Columns2 className="h-4 w-4" />
+                  </button>
+                )}
+                {showSwapLeft && (
+                  <button
+                    type="button"
+                    onClick={layoutActions!.swapSides}
+                    className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                    title="Move Gantt to right"
+                    aria-label="Move Gantt to right"
+                  >
+                    <PanelLeft className="h-4 w-4" />
+                  </button>
+                )}
+                {showSwapRight && (
+                  <button
+                    type="button"
+                    onClick={layoutActions!.swapSides}
+                    className="p-1 text-gray-400 hover:text-white hover:bg-dark-700 rounded transition-colors"
+                    title="Move Gantt to left"
+                    aria-label="Move Gantt to left"
+                  >
+                    <PanelRight className="h-4 w-4" />
+                  </button>
+                )}
+                {showCloseButton && (
+                  <button
+                    onClick={onClose}
+                    className="p-1 hover:bg-dark-700 rounded transition-colors"
+                    aria-label="Close panel"
+                  >
+                    <X className="h-4 w-4 text-gray-400 hover:text-white" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1018,7 +1115,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
             <p>No activities match the current filter</p>
           </div>
         ) : (
-          <div data-gantt-printable className="min-w-[500px] flex flex-col flex-1 overflow-hidden relative">
+          <div ref={printableRef} data-gantt-printable className="min-w-[500px] flex flex-col flex-1 overflow-hidden relative">
             {columnBoundaries.map((boundary) => (
               <div
                 key={`resize-${boundary.key}`}
@@ -1036,7 +1133,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
               />
             ))}
             {/* Timeline header - STICKY, not virtualized */}
-            <div className="sticky top-0 z-10 bg-[#0d1117]">
+            <div ref={headerScrollRef} className="sticky top-0 z-10 bg-[#0d1117] overflow-hidden">
               <TimelineHeader
                 months={timeline.months}
                 yearGroups={timeline.yearGroups}
@@ -1044,15 +1141,19 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                 nameColumnWidth={nameColumnWidth}
                 visibleColumns={visibleColumns}
                 optionalColumnWidths={optionalColumnWidths}
+                timelineContentWidth={timelineContentWidth}
+                ganttContentWidth={ganttContentWidth}
+                timelineScale={timelineScale}
+                onTimelineScaleMouseDown={startTimelineScaleDrag}
               />
             </div>
 
             {/* Virtualized body - scrollable */}
-            <div ref={parentRef} className="flex-1 overflow-auto">
+            <div ref={parentRef} className="flex-1 overflow-auto" onScroll={handleBodyScroll}>
               <div
                 style={{
                   height: `${rowVirtualizer.getTotalSize()}px`,
-                  width: '100%',
+                  width: `${ganttContentWidth}px`,
                   position: 'relative',
                 }}
               >
@@ -1141,7 +1242,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                     className="absolute top-0 bottom-0"
                     style={{ 
                       left: `${activityColumnWidth}px`,
-                      right: 0,
+                      width: `${timelineContentWidth}px`,
                     }}
                   >
                     <RelationshipArrows
@@ -1150,6 +1251,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
                       rowHeight={ROW_HEIGHT_PX}
                       showCriticalOnly={false}
                       totalHeight={rowVirtualizer.getTotalSize()}
+                      onNavigateToActivity={navigateToActivity}
                     />
                   </div>
                 )}
@@ -1170,9 +1272,7 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
         hasUpdates={updatesMap.hasUpdates}
         showUpdates={showUpdates}
         hasBaselineUpdates={baselineUpdatesMap.hasUpdates}
-        onPrintClick={handlePrint}
-        printDisabled={visibleItems.length === 0 || isViewLoading}
-        printButtonRef={printButtonRef}
+        statsItems={headerMetaItems}
       />
     </div>
   );
@@ -1187,6 +1287,10 @@ interface TimelineHeaderProps {
   nameColumnWidth: number;
   visibleColumns: OptionalColumnKey[];
   optionalColumnWidths: Record<OptionalColumnKey, number>;
+  timelineContentWidth: number;
+  ganttContentWidth: number;
+  timelineScale: number;
+  onTimelineScaleMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
 }
 
 interface HeaderMetaItem {
@@ -1194,29 +1298,31 @@ interface HeaderMetaItem {
   value: string;
 }
 
-interface HeaderMetaProps {
-  items: HeaderMetaItem[];
-}
+function TimelineHeader({
+  months,
+  yearGroups,
+  activityColumnWidth,
+  nameColumnWidth,
+  visibleColumns,
+  optionalColumnWidths,
+  timelineContentWidth,
+  ganttContentWidth,
+  timelineScale,
+  onTimelineScaleMouseDown,
+}: TimelineHeaderProps) {
+  const dragTitle = `Drag horizontally to resize timeline (${Math.round(timelineScale * 100)}%)`;
 
-function HeaderMeta({ items }: HeaderMetaProps) {
   return (
-    <div className="flex items-center gap-4 text-xs text-gray-400 flex-wrap">
-      {items.map((item) => (
-        <span key={item.label}>
-          {item.label}: {item.value}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function TimelineHeader({ months, yearGroups, activityColumnWidth, nameColumnWidth, visibleColumns, optionalColumnWidths }: TimelineHeaderProps) {
-  return (
-    <div className="mb-4">
+    <div className="mb-4" style={{ width: `${ganttContentWidth}px` }}>
       {/* Year row */}
-      <div className="flex">
+      <div className="flex" style={{ width: `${ganttContentWidth}px` }}>
         <div className="shrink-0" style={{ width: `${activityColumnWidth}px` }}></div>
-        <div className="flex-1 flex text-xs text-gray-500">
+        <div
+          className="shrink-0 flex cursor-ew-resize select-none text-xs text-gray-500"
+          style={{ width: `${timelineContentWidth}px` }}
+          onMouseDown={onTimelineScaleMouseDown}
+          title={dragTitle}
+        >
           {yearGroups.map((group, index) => (
             <div
               key={index}
@@ -1229,7 +1335,7 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, nameColumnWid
         </div>
       </div>
       {/* Month row */}
-      <div className="flex border-b border-dark-600 pb-2">
+      <div className="flex border-b border-dark-600 pb-2" style={{ width: `${ganttContentWidth}px` }}>
         <div className="shrink-0 flex items-center text-xs font-medium text-gray-400" style={{ width: `${activityColumnWidth}px` }}>
           <div className="truncate px-2 text-center" style={{ width: `${nameColumnWidth}px` }}>
             Activity
@@ -1248,7 +1354,12 @@ function TimelineHeader({ months, yearGroups, activityColumnWidth, nameColumnWid
             );
           })}
         </div>
-        <div className="flex-1 flex text-xs text-gray-400">
+        <div
+          className="shrink-0 flex cursor-ew-resize select-none text-xs text-gray-400"
+          style={{ width: `${timelineContentWidth}px` }}
+          onMouseDown={onTimelineScaleMouseDown}
+          title={dragTitle}
+        >
           {months.map((month, index) => (
             <div
               key={index}
@@ -1642,12 +1753,10 @@ interface LegendProps {
   hasUpdates?: boolean;
   showUpdates?: boolean;
   hasBaselineUpdates?: boolean;
-  onPrintClick?: () => void;
-  printDisabled?: boolean;
-  printButtonRef?: React.RefObject<HTMLButtonElement | null>;
+  statsItems?: HeaderMetaItem[];
 }
 
-function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, onPrintClick, printDisabled, printButtonRef }: LegendProps) {
+function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselineMode, baselineLabel, hasUpdates, showUpdates, hasBaselineUpdates, statsItems }: LegendProps) {
   const bs = ganttStyleSettings.baseline;
   const us = ganttStyleSettings.updates;
   const bus = ganttStyleSettings.baselineUpdates;
@@ -1747,21 +1856,18 @@ function Legend({ grouping, hasRelationships, hasBaseline, showBaseline, baselin
             </div>
           </>
         )}
-        {/* Print icon */}
-        {onPrintClick && (
+        {/* Stats: pushed to the right */}
+        {statsItems && statsItems.length > 0 && (
           <>
             <div className="flex-1" />
-            <button
-              ref={printButtonRef}
-              type="button"
-              onClick={onPrintClick}
-              disabled={printDisabled}
-              className={`p-1 rounded transition-colors ${printDisabled ? 'opacity-30 cursor-not-allowed' : 'hover:bg-dark-700'}`}
-              title="Print schedule"
-              aria-label="Print schedule"
-            >
-              <Printer className="h-3.5 w-3.5" />
-            </button>
+            <div className="flex items-center gap-3 text-gray-400 flex-wrap">
+              {statsItems.map((item) => (
+                <span key={item.label} className="whitespace-nowrap">
+                  <span className="text-gray-500">{item.label}:</span>{' '}
+                  <span className="text-gray-300">{item.value}</span>
+                </span>
+              ))}
+            </div>
           </>
         )}
       </div>

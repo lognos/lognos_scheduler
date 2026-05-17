@@ -88,7 +88,6 @@ export function useAGUIStream() {
     const [activeScheduleViewKey, setActiveScheduleViewKey] = useState<ScheduleViewKey | null>(null);
     const [isPreloadingSchedule, setIsPreloadingSchedule] = useState(false);
     const [scheduleViewCache, setScheduleViewCache] = useState<Record<string, GanttChartData>>({});
-    const [activeBaselineMode, setActiveBaselineMode] = useState<BaselineMode>('own');
 
     useEffect(() => {
         // Initialize conversation ID on client side only
@@ -208,8 +207,6 @@ export function useAGUIStream() {
 
     const switchBaselineMode = useCallback(async (mode: BaselineMode) => {
         if (!currentProject?.project_id) return;
-
-        setActiveBaselineMode(mode);
 
         // Always re-fetch with the new baseline_mode (bypass cache)
         const viewKey = activeScheduleViewKey || 'full_schedule';
@@ -363,7 +360,8 @@ export function useAGUIStream() {
                             } else if (isGanttPanelEvent(data)) {
                                 // Gantt panel show/hide event
                                 if (data.action === 'show' && data.data) {
-                                    setScheduleViewCache((prev) => ({ ...prev, custom: data.data }));
+                                    const ganttData = data.data;
+                                    setScheduleViewCache((prev) => ({ ...prev, custom: ganttData }));
                                     setScheduleViews((prev) => {
                                         const hasCustom = prev.some((view) => view.view_key === 'custom');
                                         if (hasCustom) {
@@ -379,7 +377,7 @@ export function useAGUIStream() {
                                     setActiveScheduleViewKey('custom');
                                     setGanttPanel({
                                         isVisible: true,
-                                        data: data.data,
+                                        data: ganttData,
                                         isLoading: false,
                                     });
                                 } else if (data.action === 'hide') {

@@ -21,6 +21,8 @@ interface RelationshipArrowsProps {
   showCriticalOnly?: boolean;
   /** Total height of the container in pixels */
   totalHeight: number;
+  /** Optional navigation callback for selecting and scrolling to an activity row. */
+  onNavigateToActivity?: (sItemId: string) => void;
 }
 
 interface TooltipState {
@@ -46,8 +48,10 @@ export function RelationshipArrows({
   rowHeight,
   showCriticalOnly = true,
   totalHeight,
+  onNavigateToActivity,
 }: RelationshipArrowsProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const hideTooltipTimeoutRef = useRef<number | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [tooltip, setTooltip] = useState<TooltipState>({
     visible: false,
@@ -97,10 +101,33 @@ export function RelationshipArrows({
     return map;
   }, [items]);
 
+  const clearHideTooltipTimeout = useCallback(() => {
+    if (hideTooltipTimeoutRef.current !== null) {
+      window.clearTimeout(hideTooltipTimeoutRef.current);
+      hideTooltipTimeoutRef.current = null;
+    }
+  }, []);
+
+  const hideTooltip = useCallback(() => {
+    clearHideTooltipTimeout();
+    setTooltip((prev) => ({ ...prev, visible: false, relationship: null }));
+  }, [clearHideTooltipTimeout]);
+
+  const scheduleHideTooltip = useCallback(() => {
+    clearHideTooltipTimeout();
+    hideTooltipTimeoutRef.current = window.setTimeout(() => {
+      hideTooltip();
+    }, 150);
+  }, [clearHideTooltipTimeout, hideTooltip]);
+
+  useEffect(() => clearHideTooltipTimeout, [clearHideTooltipTimeout]);
+
   const handleMouseEnter = useCallback((e: React.MouseEvent, pathData: RelationshipPath) => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
     const rect = wrapper.getBoundingClientRect();
+
+    clearHideTooltipTimeout();
     
     setTooltip({
       visible: true,
@@ -108,7 +135,7 @@ export function RelationshipArrows({
       y: e.clientY - rect.top,
       relationship: pathData.relationship,
     });
-  }, []);
+  }, [clearHideTooltipTimeout]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const wrapper = wrapperRef.current;
@@ -123,8 +150,15 @@ export function RelationshipArrows({
   }, []);
 
   const handleMouseLeave = useCallback(() => {
-    setTooltip((prev) => ({ ...prev, visible: false, relationship: null }));
-  }, []);
+    scheduleHideTooltip();
+  }, [scheduleHideTooltip]);
+
+  const handleEndpointNavigate = useCallback((sItemId: string) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onNavigateToActivity?.(sItemId);
+    hideTooltip();
+  }, [hideTooltip, onNavigateToActivity]);
 
   return (
     <div 
@@ -240,13 +274,15 @@ export function RelationshipArrows({
       {/* Tooltip */}
       {tooltip.visible && tooltip.relationship && (
         <div
-          className="absolute z-50 min-w-[260px] max-w-[360px] rounded-md border border-dark-600 bg-[#0d1117] shadow-lg pointer-events-none px-3 py-2"
+          className="absolute z-50 min-w-[280px] max-w-[380px] rounded-md border border-dark-600 bg-[#0d1117] shadow-lg pointer-events-auto px-3 py-2"
           style={{
             left: tooltip.x + 12,
             top: tooltip.y - 10,
             transform: 'translateY(-100%)',
           }}
           role="tooltip"
+          onMouseEnter={clearHideTooltipTimeout}
+          onMouseLeave={scheduleHideTooltip}
         >
           <div className="flex flex-col gap-1.5">
             {/* Header: FS + lag */}
@@ -269,28 +305,62 @@ export function RelationshipArrows({
             </div>
 
             {/* Predecessor */}
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs font-mono text-blue-300 shrink-0">
-                {tooltip.relationship.pred_id}
-              </span>
-              <span className="text-xs text-gray-200 truncate">
-                {itemNameMap.get(String(tooltip.relationship.pred_id)) ?? '—'}
-              </span>
-            </div>
+            <EndpointButton
+              label="Pred"
+              sItemId={String(tooltip.relationship.pred_id)}
+              itemName={itemNameMap.get(String(tooltip.relationship.pred_id)) ?? '—'}
+              canNavigate={Boolean(onNavigateToActivity)}
+              onNavigate={handleEndpointNavigate(String(tooltip.relationship.pred_id))}
+            />
 
             {/* Successor */}
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs font-mono text-blue-300 shrink-0">
-                {tooltip.relationship.succ_id}
-              </span>
-              <span className="text-xs text-gray-200 truncate">
-                {itemNameMap.get(String(tooltip.relationship.succ_id)) ?? '—'}
-              </span>
-            </div>
+            <EndpointButton
+              label="Succ"
+              sItemId={String(tooltip.relationship.succ_id)}
+              itemName={itemNameMap.get(String(tooltip.relationship.succ_id)) ?? '—'}
+              canNavigate={Boolean(onNavigateToActivity)}
+              onNavigate={handleEndpointNavigate(String(tooltip.relationship.succ_id))}
+            />
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+interface EndpointButtonProps {
+  label: string;
+  sItemId: string;
+  itemName: string;
+  canNavigate: boolean;
+  onNavigate: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+function EndpointButton({ label, sItemId, itemName, canNavigate, onNavigate }: EndpointButtonProps) {
+  return (
+    <button
+      type="button"
+      disabled={!canNavigate}
+      onClick={onNavigate}
+      className={`grid w-full grid-cols-[34px_minmax(0,1fr)] items-baseline gap-2 rounded px-1.5 py-1 text-left transition-colors ${
+        canNavigate
+          ? 'hover:bg-blue-500/10 focus:outline-none focus:ring-1 focus:ring-blue-500/70'
+          : 'cursor-default'
+      }`}
+      title={canNavigate ? `Go to ${label.toLowerCase()} activity` : undefined}
+    >
+      <span className="text-[10px] font-medium uppercase text-gray-500">
+        {label}
+      </span>
+      <span className="flex min-w-0 items-baseline gap-2">
+        <span className="shrink-0 font-mono text-xs text-blue-300">
+          {sItemId}
+        </span>
+        <span className="truncate text-xs text-gray-200">
+          {itemName}
+        </span>
+      </span>
+    </button>
   );
 }
 

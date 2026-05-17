@@ -4,6 +4,8 @@ Repository for MS Project schedules stored in Supabase.
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 from datetime import datetime, date, timedelta
+from hashlib import sha1
+import json
 import logfire
 from supabase import Client
 
@@ -259,6 +261,38 @@ class MSScheduleRepository:
             .select('*, pred:schedule_activities!pred_id(name, ms_uid, wbs), succ:schedule_activities!succ_id(name, ms_uid, wbs)') \
             .eq('schedule_version_id', version_id) \
             .execute().data or []
+
+    @logfire.instrument("ms_repo.get_relationship_cache_signature")
+    async def get_relationship_cache_signature(self, version_id: int) -> dict:
+        """Return a deterministic signature for relationship snapshot invalidation."""
+        rows = self._table('schedule_links') \
+            .select('id,pred_id,succ_id,rel_type,lag_d') \
+            .eq('schedule_version_id', version_id) \
+            .order('id') \
+            .execute().data or []
+
+        normalized = [
+            {
+                "id": int(row["id"]),
+                "pred_id": int(row["pred_id"]),
+                "succ_id": int(row["succ_id"]),
+                "rel_type": str(row.get("rel_type") or "FS"),
+                "lag_d": int(row.get("lag_d") or 0),
+            }
+            for row in rows
+            if row.get("id") is not None
+            and row.get("pred_id") is not None
+            and row.get("succ_id") is not None
+        ]
+        checksum = sha1(
+            json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        return {
+            "relationship_count": len(normalized),
+            "max_relationship_id": max((row["id"] for row in normalized), default=0),
+            "relationship_checksum": checksum,
+        }
     
     @logfire.instrument("ms_repo.get_relationships_for_activity")
     async def get_relationships_for_activity(

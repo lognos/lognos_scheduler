@@ -19,4 +19,5 @@ email-validator
 google-genai
 openpyxl
 python-docx
+pytest
 

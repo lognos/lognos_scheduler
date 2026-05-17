@@ -1,6 +1,7 @@
 """Repository for persisted schedule view definitions and snapshots."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import logfire
@@ -107,6 +108,7 @@ class ScheduleViewRepository:
             "schedule_version_id": schedule_version_id,
             "payload": payload,
             "checksum": checksum,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
         }
 
         self._table("schedule_view_snapshots").upsert(

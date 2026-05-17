@@ -63,6 +63,16 @@ export interface GanttFilter {
   wbs_path?: string;
   /** Show only critical path activities */
   critical_only?: boolean;
+  /** P6-style critical definition used by the backend view */
+  critical_definition?: 'total_float' | 'longest_path' | 'free_float_path';
+  /** Total-float threshold, in days, when critical_definition is total_float */
+  float_threshold_d?: number | null;
+  /** Multiple-float-path number when a float path view is selected */
+  float_path?: number | null;
+  /** Multiple-float-path calculation method */
+  float_path_method?: 'total_float' | 'free_float' | null;
+  /** Selected end target for longest-path / float-path views */
+  path_target?: 'project_finish' | string | null;
   /** Activity code filters: { "Phase": ["Phase 1"], "Discipline": ["Civil"] } */
   activity_codes?: Record<string, string[]>;
   /** Status filter */
@@ -279,7 +289,14 @@ export interface GanttPanelState {
   isLoading: boolean;
 }
 
-export type PredefinedScheduleViewKey = 'critical_path' | 'lookahead_4w' | 'full_schedule' | 'updates';
+export type PredefinedScheduleViewKey =
+  | 'critical_path'
+  | 'total_float_critical'
+  | 'near_critical'
+  | 'float_path_1'
+  | 'lookahead_4w'
+  | 'full_schedule'
+  | 'updates';
 export type ScheduleViewKey = PredefinedScheduleViewKey | 'custom';
 
 export interface ScheduleViewMeta {
