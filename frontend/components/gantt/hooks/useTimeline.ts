@@ -23,6 +23,8 @@ interface UseTimelineOptions {
   projectStart?: string | Date;
   /** Override project end (ISO string or Date) */
   projectEnd?: string | Date;
+  /** Extra months to pad on each side of the project window (default 0) */
+  padMonths?: number;
 }
 
 /**
@@ -35,6 +37,7 @@ export function useTimeline({
   items,
   projectStart,
   projectEnd,
+  padMonths = 0,
 }: UseTimelineOptions): TimelineData {
   return useMemo(() => {
     if (!items || items.length === 0) {
@@ -74,8 +77,9 @@ export function useTimeline({
           : projectEnd
         : new Date(Math.max(...allEnds.map((d) => d.getTime())));
 
-      const timelineStart = startOfMonth(dataStart);
-      const timelineEnd = addMonths(startOfMonth(dataEnd), 1);
+      const pad = Math.max(0, Math.floor(padMonths));
+      const timelineStart = addMonths(startOfMonth(dataStart), -pad);
+      const timelineEnd = addMonths(startOfMonth(dataEnd), 1 + pad);
 
       // Generate months
       const months: TimelineMonth[] = [];
@@ -118,5 +122,5 @@ export function useTimeline({
       console.error('Error generating timeline:', error);
       return { months: [], totalDays: 0, startDate: new Date(), yearGroups: [] };
     }
-  }, [items, projectStart, projectEnd]);
+  }, [items, projectStart, projectEnd, padMonths]);
 }

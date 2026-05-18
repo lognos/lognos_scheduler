@@ -36,6 +36,10 @@ const CORNER_RADIUS = 4; // Match activity bar border-radius
 const MIN_HORIZONTAL_SPACE = 20; // Minimum space needed for direct routing
 const ROUTE_AROUND_GAP = 12; // Gap when routing around bars
 const P6_BEND_OFFSET = 10; // Horizontal offset before vertical bend (P6-style)
+// Milestone diamond is a 12px square rotated 45° → half-diagonal ≈ 8.5px each side
+// of its visual center. Use this so arrow gap matches regular bars instead of
+// relying on bounds derived from the clamped widthPercentage.
+const MILESTONE_HALF_WIDTH_PX = 8.5;
 
 // Colors
 const CRITICAL_COLOR = '#EF4444'; // red-500
@@ -99,20 +103,44 @@ function calculatePath(
 
   if (!pred || !succ) return null;
 
-  // Calculate bar bounds in pixels
-  const predBounds: BarBounds = {
-    left: (pred.item.startPercentage / 100) * containerWidth,
-    right: ((pred.item.startPercentage + pred.item.widthPercentage) / 100) * containerWidth,
-    centerY: pred.rowIndex * rowHeight + rowHeight / 2,
-    rowIndex: pred.rowIndex,
-  };
+  // Milestones are rendered as a fixed-size rotated diamond centered on
+  // startPercentage, but useBarPositions clamps widthPercentage to a minimum
+  // (>= 1%) which inflates bounds.right several pixels right of the visual
+  // center. Use the diamond's actual half-width instead so arrows leave/enter
+  // with the same gap as regular bars.
+  const isMilestone = (item: PositionedItem) =>
+    item.working_days === 0 || item.calendar_days === 0;
 
-  const succBounds: BarBounds = {
-    left: (succ.item.startPercentage / 100) * containerWidth,
-    right: ((succ.item.startPercentage + succ.item.widthPercentage) / 100) * containerWidth,
-    centerY: succ.rowIndex * rowHeight + rowHeight / 2,
-    rowIndex: succ.rowIndex,
-  };
+  const predCenterX = (pred.item.startPercentage / 100) * containerWidth;
+  const succCenterX = (succ.item.startPercentage / 100) * containerWidth;
+
+  const predBounds: BarBounds = isMilestone(pred.item)
+    ? {
+        left: predCenterX - MILESTONE_HALF_WIDTH_PX,
+        right: predCenterX + MILESTONE_HALF_WIDTH_PX,
+        centerY: pred.rowIndex * rowHeight + rowHeight / 2,
+        rowIndex: pred.rowIndex,
+      }
+    : {
+        left: (pred.item.startPercentage / 100) * containerWidth,
+        right: ((pred.item.startPercentage + pred.item.widthPercentage) / 100) * containerWidth,
+        centerY: pred.rowIndex * rowHeight + rowHeight / 2,
+        rowIndex: pred.rowIndex,
+      };
+
+  const succBounds: BarBounds = isMilestone(succ.item)
+    ? {
+        left: succCenterX - MILESTONE_HALF_WIDTH_PX,
+        right: succCenterX + MILESTONE_HALF_WIDTH_PX,
+        centerY: succ.rowIndex * rowHeight + rowHeight / 2,
+        rowIndex: succ.rowIndex,
+      }
+    : {
+        left: (succ.item.startPercentage / 100) * containerWidth,
+        right: ((succ.item.startPercentage + succ.item.widthPercentage) / 100) * containerWidth,
+        centerY: succ.rowIndex * rowHeight + rowHeight / 2,
+        rowIndex: succ.rowIndex,
+      };
 
   // Generate path based on relationship type
   const path = generatePathForRelType(rel.rel_type, predBounds, succBounds, rowHeight);

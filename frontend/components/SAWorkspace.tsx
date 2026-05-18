@@ -45,34 +45,127 @@ const FLOAT_MIN_WIDTH = 360;
 const FLOAT_MIN_HEIGHT = 280;
 const FLOAT_MARGIN = 24;
 
-const DEFAULT_FLOATING_CHAT: FloatingChatGeometry = {
+const PREVIOUS_DEFAULT_FLOATING_CHAT: FloatingChatGeometry = {
     x: 80,
     y: 80,
     width: 480,
     height: 560,
 };
 
+const DEFAULT_FLOATING_CHAT_SIZE = {
+    width: 520,
+    height: 560,
+};
+
+type FloatingResizeHandle = 'n' | 'e' | 's' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
+const FLOATING_RESIZE_HANDLES: Array<{
+    handle: FloatingResizeHandle;
+    className: string;
+    label: string;
+}> = [
+    { handle: 'n', className: 'absolute left-4 right-4 top-0 h-2 cursor-ns-resize z-50', label: 'Resize chat from top edge' },
+    { handle: 'e', className: 'absolute right-0 top-4 bottom-4 w-2 cursor-ew-resize z-50', label: 'Resize chat from right edge' },
+    { handle: 's', className: 'absolute left-4 right-4 bottom-0 h-2 cursor-ns-resize z-50', label: 'Resize chat from bottom edge' },
+    { handle: 'w', className: 'absolute left-0 top-4 bottom-4 w-2 cursor-ew-resize z-50', label: 'Resize chat from left edge' },
+    { handle: 'ne', className: 'absolute right-0 top-0 h-4 w-4 cursor-nesw-resize z-50', label: 'Resize chat from top-right corner' },
+    { handle: 'nw', className: 'absolute left-0 top-0 h-4 w-4 cursor-nwse-resize z-50', label: 'Resize chat from top-left corner' },
+    { handle: 'se', className: 'absolute right-0 bottom-0 h-4 w-4 cursor-nwse-resize z-50', label: 'Resize chat from bottom-right corner' },
+    { handle: 'sw', className: 'absolute left-0 bottom-0 h-4 w-4 cursor-nesw-resize z-50', label: 'Resize chat from bottom-left corner' },
+];
+
+function clampNumber(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+}
+
 function clampGeometry(
     geom: FloatingChatGeometry,
     bounds: { width: number; height: number }
 ): FloatingChatGeometry {
-    const width = Math.min(Math.max(geom.width, FLOAT_MIN_WIDTH), Math.max(FLOAT_MIN_WIDTH, bounds.width - FLOAT_MARGIN * 2));
-    const height = Math.min(Math.max(geom.height, FLOAT_MIN_HEIGHT), Math.max(FLOAT_MIN_HEIGHT, bounds.height - FLOAT_MARGIN * 2));
-    const x = Math.min(Math.max(geom.x, 0), Math.max(0, bounds.width - width));
-    const y = Math.min(Math.max(geom.y, 0), Math.max(0, bounds.height - height));
+    const maxWidth = Math.max(FLOAT_MIN_WIDTH, bounds.width - FLOAT_MARGIN * 2);
+    const maxHeight = Math.max(FLOAT_MIN_HEIGHT, bounds.height - FLOAT_MARGIN * 2);
+    const width = clampNumber(geom.width, FLOAT_MIN_WIDTH, maxWidth);
+    const height = clampNumber(geom.height, FLOAT_MIN_HEIGHT, maxHeight);
+    const maxX = Math.max(FLOAT_MARGIN, bounds.width - width - FLOAT_MARGIN);
+    const maxY = Math.max(FLOAT_MARGIN, bounds.height - height - FLOAT_MARGIN);
+    const x = clampNumber(geom.x, FLOAT_MARGIN, maxX);
+    const y = clampNumber(geom.y, FLOAT_MARGIN, maxY);
     return { x, y, width, height };
+}
+
+function getDefaultFloatingChat(bounds: { width: number; height: number }): FloatingChatGeometry {
+    const width = Math.min(DEFAULT_FLOATING_CHAT_SIZE.width, Math.max(FLOAT_MIN_WIDTH, bounds.width - FLOAT_MARGIN * 2));
+    const height = Math.min(DEFAULT_FLOATING_CHAT_SIZE.height, Math.max(FLOAT_MIN_HEIGHT, bounds.height - FLOAT_MARGIN * 2));
+    return clampGeometry(
+        {
+            x: bounds.width - width - FLOAT_MARGIN,
+            y: bounds.height - height - FLOAT_MARGIN,
+            width,
+            height,
+        },
+        bounds,
+    );
+}
+
+function getFallbackFloatingBounds(): { width: number; height: number } {
+    if (typeof window === 'undefined') {
+        return { width: 1280, height: 760 };
+    }
+    return { width: window.innerWidth, height: window.innerHeight };
+}
+
+function isPreviousDefaultGeometry(geom: FloatingChatGeometry): boolean {
+    return (
+        geom.x === PREVIOUS_DEFAULT_FLOATING_CHAT.x &&
+        geom.y === PREVIOUS_DEFAULT_FLOATING_CHAT.y &&
+        geom.width === PREVIOUS_DEFAULT_FLOATING_CHAT.width &&
+        geom.height === PREVIOUS_DEFAULT_FLOATING_CHAT.height
+    );
+}
+
+function getResizeCursor(handle: FloatingResizeHandle): string {
+    if (handle === 'n' || handle === 's') return 'ns-resize';
+    if (handle === 'e' || handle === 'w') return 'ew-resize';
+    if (handle === 'ne' || handle === 'sw') return 'nesw-resize';
+    return 'nwse-resize';
+}
+
+function resizeFloatingGeometry(
+    handle: FloatingResizeHandle,
+    startGeometry: FloatingChatGeometry,
+    deltaX: number,
+    deltaY: number,
+    bounds: { width: number; height: number },
+): FloatingChatGeometry {
+    const maxWidth = Math.max(FLOAT_MIN_WIDTH, bounds.width - FLOAT_MARGIN * 2);
+    const maxHeight = Math.max(FLOAT_MIN_HEIGHT, bounds.height - FLOAT_MARGIN * 2);
+    const right = startGeometry.x + startGeometry.width;
+    const bottom = startGeometry.y + startGeometry.height;
+    let { x, y, width, height } = startGeometry;
+
+    if (handle.includes('e')) {
+        width = clampNumber(startGeometry.width + deltaX, FLOAT_MIN_WIDTH, maxWidth);
+    }
+    if (handle.includes('s')) {
+        height = clampNumber(startGeometry.height + deltaY, FLOAT_MIN_HEIGHT, maxHeight);
+    }
+    if (handle.includes('w')) {
+        width = clampNumber(startGeometry.width - deltaX, FLOAT_MIN_WIDTH, maxWidth);
+        x = right - width;
+    }
+    if (handle.includes('n')) {
+        height = clampNumber(startGeometry.height - deltaY, FLOAT_MIN_HEIGHT, maxHeight);
+        y = bottom - height;
+    }
+
+    return clampGeometry({ x, y, width, height }, bounds);
 }
 
 /**
  * SAWorkspace — Schedule Assistant workspace shell.
  *
- * Owns layout mode state and renders:
- *   - Mode A 'gantt-full-chat-floating': Gantt fills the canvas; chat is a draggable floating panel
- *   - Mode B 'gantt-main-chat-side'    : Gantt left, chat right (resizable split)
- *   - Mode C 'chat-main-gantt-side'    : Chat left, Gantt right (legacy layout)
- *
- * Empty schedule fallback: when no Gantt data is available, the effective mode
- * is forced to chat-only ('chat-only-virtual'); the stored mode is preserved.
+ * Owns the simplified Schedule Assistant canvas: Gantt fills the background,
+ * and chat floats above it as a draggable, resizable panel.
  */
 export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
     messages,
@@ -104,7 +197,6 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         lastDocked: `${persistenceNamespace}.lastDockedMode`,
     }), [persistenceNamespace]);
 
-    const validModes: SAWorkspaceMode[] = ['gantt-full-chat-floating', 'gantt-main-chat-side', 'chat-main-gantt-side'];
     const validDocked: SADockedMode[] = ['gantt-main-chat-side', 'chat-main-gantt-side'];
 
     const readStored = <T,>(key: string, parse: (raw: string) => T | null): T | null => {
@@ -120,8 +212,8 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
 
     const [layoutMode, setLayoutMode] = useState<SAWorkspaceMode>(() =>
         readStored<SAWorkspaceMode>(storageKeys.mode, (raw) =>
-            validModes.includes(raw as SAWorkspaceMode) ? (raw as SAWorkspaceMode) : null,
-        ) ?? 'gantt-main-chat-side'
+            raw === 'gantt-full-chat-floating' ? 'gantt-full-chat-floating' : null,
+        ) ?? 'gantt-full-chat-floating'
     );
     const [lastDockedMode, setLastDockedMode] = useState<SADockedMode>(() =>
         readStored<SADockedMode>(storageKeys.lastDocked, (raw) =>
@@ -140,8 +232,8 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
             return Number.isFinite(n) && n > 0.05 && n < 0.95 ? n : null;
         }) ?? 0.2
     );
-    const [floatingChat, setFloatingChat] = useState<FloatingChatGeometry>(() =>
-        readStored<FloatingChatGeometry>(storageKeys.floatingChat, (raw) => {
+    const [initialFloatingChat] = useState<{ geometry: FloatingChatGeometry; shouldPlace: boolean }>(() => {
+        const stored = readStored<FloatingChatGeometry>(storageKeys.floatingChat, (raw) => {
             try {
                 const parsed = JSON.parse(raw);
                 if (
@@ -157,8 +249,27 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
             } catch {
                 return null;
             }
-        }) ?? DEFAULT_FLOATING_CHAT
-    );
+        });
+        if (stored && !isPreviousDefaultGeometry(stored)) {
+            return { geometry: stored, shouldPlace: false };
+        }
+        return { geometry: getDefaultFloatingChat(getFallbackFloatingBounds()), shouldPlace: true };
+    });
+    const [shouldPlaceFloatingChat, setShouldPlaceFloatingChat] = useState(initialFloatingChat.shouldPlace);
+    const [floatingChat, setFloatingChat] = useState<FloatingChatGeometry>(initialFloatingChat.geometry);
+
+    useEffect(() => {
+        if (!shouldPlaceFloatingChat || typeof window === 'undefined') return;
+        const frameId = window.requestAnimationFrame(() => {
+            const rect = workspaceRef.current?.getBoundingClientRect();
+            const bounds = rect
+                ? { width: rect.width, height: rect.height }
+                : getFallbackFloatingBounds();
+            setFloatingChat(getDefaultFloatingChat(bounds));
+            setShouldPlaceFloatingChat(false);
+        });
+        return () => window.cancelAnimationFrame(frameId);
+    }, [shouldPlaceFloatingChat]);
 
     // Persist on change.
     useEffect(() => {
@@ -182,9 +293,8 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         try { window.localStorage.setItem(storageKeys.floatingChat, JSON.stringify(floatingChat)); } catch { /* ignore */ }
     }, [floatingChat, storageKeys.floatingChat]);
 
-    // -- Effective mode (empty-schedule fallback) ---------------------------
-    const isGanttVisible = !!(ganttPanel?.isVisible && ganttPanel?.data);
-    const effectiveMode: SAEffectiveMode = isGanttVisible ? layoutMode : 'chat-only-virtual';
+    // -- Effective mode -----------------------------------------------------
+    const effectiveMode = useMemo<SAEffectiveMode>(() => 'gantt-full-chat-floating', []);
 
     // -- Layout actions -----------------------------------------------------
     const layoutActions = useMemo<SAWorkspaceLayoutActions>(() => ({
@@ -234,6 +344,12 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         startX: number;
         startY: number;
     } | null>(null);
+    const resizeStateRef = useRef<{
+        handle: FloatingResizeHandle;
+        startMouseX: number;
+        startMouseY: number;
+        startGeometry: FloatingChatGeometry;
+    } | null>(null);
 
     const startFloatingDrag = (event: React.MouseEvent<HTMLDivElement>) => {
         // Ignore drag when the click target is interactive (button etc).
@@ -245,18 +361,38 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
             startX: floatingChat.x,
             startY: floatingChat.y,
         };
-        document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'grabbing';
+        document.body.style.setProperty('user-select', 'none');
+        document.body.style.setProperty('cursor', 'grabbing');
+    };
+
+    const startFloatingResize = (event: React.MouseEvent<HTMLDivElement>, handle: FloatingResizeHandle) => {
+        event.preventDefault();
+        event.stopPropagation();
+        resizeStateRef.current = {
+            handle,
+            startMouseX: event.clientX,
+            startMouseY: event.clientY,
+            startGeometry: floatingChat,
+        };
+        document.body.style.setProperty('user-select', 'none');
+        document.body.style.setProperty('cursor', getResizeCursor(handle));
     };
 
     useEffect(() => {
         const onMove = (event: MouseEvent) => {
             const drag = dragStateRef.current;
-            if (!drag) return;
             const rect = workspaceRef.current?.getBoundingClientRect();
             const bounds = rect
                 ? { width: rect.width, height: rect.height }
                 : { width: window.innerWidth, height: window.innerHeight };
+            const resize = resizeStateRef.current;
+            if (resize) {
+                const dx = event.clientX - resize.startMouseX;
+                const dy = event.clientY - resize.startMouseY;
+                setFloatingChat(resizeFloatingGeometry(resize.handle, resize.startGeometry, dx, dy, bounds));
+                return;
+            }
+            if (!drag) return;
             const dx = event.clientX - drag.startMouseX;
             const dy = event.clientY - drag.startMouseY;
             setFloatingChat((prev) => clampGeometry(
@@ -265,8 +401,9 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
             ));
         };
         const onUp = () => {
-            if (!dragStateRef.current) return;
+            if (!dragStateRef.current && !resizeStateRef.current) return;
             dragStateRef.current = null;
+            resizeStateRef.current = null;
             document.body.style.removeProperty('user-select');
             document.body.style.removeProperty('cursor');
         };
@@ -379,10 +516,10 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
 
     // Mode A: Gantt full + floating chat
     const renderGanttFullChatFloating = () => (
-        <div className={`flex-1 flex flex-col min-h-0 ${sidebarOffsetClass} relative`}>
+        <div className={`flex-1 flex flex-col min-h-0 min-w-0 ${sidebarOffsetClass} relative`}>
             {/* Gantt fills the canvas */}
             {ganttPanel?.data && (
-                <div className="flex-1 min-h-0 p-4 flex flex-col">
+                <div className="flex-1 min-h-0 min-w-0 flex flex-col">
                     <SAGanttPanel
                         data={ganttPanel.data}
                         onClose={onHideGanttPanel ?? (() => {})}
@@ -395,15 +532,14 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
                         isViewLoading={isPreloadingSchedule}
                         variant="full"
                         shellMode={shellMode}
-                        layoutMode={layoutMode}
-                        layoutActions={layoutActions}
+                        layoutMode="gantt-full-chat-floating"
                     />
                 </div>
             )}
 
             {/* Floating chat panel */}
             <div
-                className="absolute bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl flex flex-col overflow-hidden z-40"
+                className="absolute min-h-0 bg-[#0d1117] border border-dark-700 rounded-xl shadow-2xl flex flex-col overflow-hidden z-40"
                 style={{
                     left: `${floatingChat.x}px`,
                     top: `${floatingChat.y}px`,
@@ -422,12 +558,21 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
                 <SAChatHeader
                     onHistoryToggle={onHistoryToggle}
                     onNewConversation={onNewConversation}
-                    layoutMode={layoutMode}
-                    layoutActions={layoutActions}
+                    layoutMode="gantt-full-chat-floating"
                     showProjectSelector={shellMode === 'standalone'}
                 />
                 {renderChatBody('floating')}
                 {renderChatFooterInput()}
+                {FLOATING_RESIZE_HANDLES.map((handle) => (
+                    <div
+                        key={handle.handle}
+                        className={handle.className}
+                        onMouseDown={(event) => startFloatingResize(event, handle.handle)}
+                        role="separator"
+                        aria-label={handle.label}
+                    />
+                ))}
+                <div className="pointer-events-none absolute bottom-1 right-1 h-3 w-3 border-b border-r border-gray-500/60" />
             </div>
         </div>
     );
@@ -481,7 +626,7 @@ export const SAWorkspace: React.FC<SAWorkspaceProps> = ({
         );
 
         return (
-            <div className={`flex-1 flex min-h-0 ${sidebarOffsetClass}`}>
+            <div className={`flex-1 flex min-h-0 min-w-0 ${sidebarOffsetClass}`}>
                 {ganttOnLeft ? (
                     <>
                         {ganttColumn}
