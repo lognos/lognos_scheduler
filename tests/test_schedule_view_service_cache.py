@@ -4,7 +4,7 @@ from copy import deepcopy
 
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
-from backend.services.schedule_view_service import ScheduleViewService
+from sch_backend.services.schedule_view_service import ScheduleViewService
 
 
 CURRENT_SIGNATURE = {

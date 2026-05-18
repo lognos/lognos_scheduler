@@ -24,6 +24,7 @@ All notable changes to this project will be documented in this file.
 - Changed the stacking order so the frozen Gantt columns paint above relationship arrows during horizontal scroll instead of being covered by them.
 - Changed the Gantt relationship arrows overlay to clip its SVG to the timeline area so arrow paths can no longer bleed leftward into the frozen activity columns when scrolled.
 - Changed the Gantt relationship arrows overlay to dynamically clip its leftmost region equal to the current horizontal scroll offset so arrows can never paint behind the sticky activity columns once the body has been scrolled right.
+- Renamed the root application folders to `sch_backend` and `sch_frontend`, including the Python package imports and local launch commands.
 - Changed the backend runtime to a Lognos Scheduling Agent MS/workspace-only service while preserving workspace CPM, Gantt visualization, what-if, and email/team context behavior.
 - Changed scheduling agent construction to support the project's Pydantic AI dependency range and report optional Logfire instrumentation incompatibility without blocking app startup.
 - Pinned `pydantic-ai` to the version verified with the scheduling agent constructor and usage-limit APIs.

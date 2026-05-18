@@ -42,7 +42,7 @@ Prohibited:
 ## 2) Architecture Structure
 
 ```
-/backend
+/sch_backend
   /routers          # FastAPI endpoints (IO validation + auth only)
   /services         # Business logic, transactions, orchestration
   /agents           # Pydantic AI agents (reasoning & internal tools use)

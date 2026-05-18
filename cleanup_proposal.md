@@ -183,8 +183,9 @@ Recommended refactor:
 - Branch created and active: `cleanup/ms-only-production-prep`.
 - Proposal document created: `cleanup_proposal.md`.
 - P6 backend runtime paths, SQLite utilities, P6 tools, P6 repositories/services, P6 prompts, and old P6 docs/scripts/data have been removed from the branch.
+- Root application folders have been renamed to `sch_backend` and `sch_frontend`; launch commands and Python imports use the new names.
 - Chat and agent construction are MS/workspace-only; `project_type` is kept for compatibility and `p6` is rejected with a clear message.
-- MS semantic activity search was added with a Supabase repository method, a `search_activities_ms` agent tool, an embedding service, and a prepared additive RPC migration at `backend/migrations/003_schedule_activity_semantic_search.sql`.
+- MS semantic activity search was added with a Supabase repository method, a `search_activities_ms` agent tool, an embedding service, and a prepared additive RPC migration at `sch_backend/migrations/003_schedule_activity_semantic_search.sql`.
 - `network_calculator.py` and workspace CPM/Gantt/what-if behavior were preserved.
 - Backend tests pass with `PYTHONPATH="$PWD" ... -m pytest`.
 - Backend import smoke check passes with `GEMINI_API_KEY=dummy` and reports a visible warning if Logfire's optional Pydantic AI instrumentation is incompatible with the installed Pydantic AI version.
