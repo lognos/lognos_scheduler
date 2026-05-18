@@ -1,5 +1,5 @@
 """
-NetworkX-based CPM (Critical Path Method) calculator for P6 schedules.
+NetworkX-based CPM (Critical Path Method) calculator for schedule workspaces.
 
 This module provides schedule calculation functionality using NetworkX DiGraph
 for dependency network representation and CPM algorithm implementation.
@@ -20,7 +20,7 @@ import logfire
 
 
 class RelationshipType(str, Enum):
-    """P6 relationship types."""
+    """Normalized relationship types used by schedule workspaces."""
     FS = "PR_FS"  # Finish-to-Start (MVP)
     SS = "PR_SS"  # Start-to-Start (post-MVP)
     FF = "PR_FF"  # Finish-to-Finish (post-MVP)
@@ -28,7 +28,7 @@ class RelationshipType(str, Enum):
 
 
 class ConstraintType(str, Enum):
-    """P6 constraint types. MVP focuses on MSOA/SNET."""
+    """Normalized constraint types. MVP focuses on MSOA/SNET."""
     ASAP = "CS_ASAP"      # As Soon As Possible (default)
     MSOA = "CS_MSOA"      # Must Start On or After
     SNET = "CS_SNET"      # Start No Earlier Than (same as MSOA)
@@ -76,7 +76,7 @@ class CalculationResult:
 
 class NetworkCalculator:
     """
-    NetworkX-based CPM calculator for P6 schedules.
+    NetworkX-based CPM calculator for schedule workspaces.
     
     Responsibilities:
     - Build dependency graph from activities and relationships DataFrames
@@ -209,7 +209,7 @@ class NetworkCalculator:
         
         # Add activity nodes
         for _, row in self.activities_df.iterrows():
-            # Support both P6 column name (target_drtn_hr_cnt) and legacy (duration_hours)
+            # Support both workspace duration columns.
             duration_hours = row.get('target_drtn_hr_cnt') or row.get('duration_hours') or 0
             duration_days = self._hours_to_days(duration_hours)
             
@@ -261,7 +261,7 @@ class NetworkCalculator:
         return self.graph
     
     def _map_status_code(self, status_code: str) -> str:
-        """Map P6 status code to simplified status."""
+        """Map normalized status code to simplified status."""
         mapping = {
             'TK_NotStart': 'not_started',
             'TK_Active': 'active',

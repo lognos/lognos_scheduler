@@ -1,6 +1,6 @@
 """
 Chat router with SSE streaming support.
-Provides endpoints for conversational interaction with the P6 Scheduling Agent.
+Provides endpoints for conversational interaction with the Lognos Scheduling Agent.
 """
 import json
 from typing import Optional
@@ -20,12 +20,8 @@ import logfire
 
 from backend.agents.scheduling_agent import get_scheduling_agent, SCHEDULING_USAGE_LIMITS
 from backend.tools._base import AgentDeps
-from backend.services.scheduling_service import SchedulingService
-from backend.services.vector_service import VectorService
-from backend.utils.safe_db import SafeP6Transaction
 from backend.utils.supabase_client import get_supabase
 from backend.repositories.conversation_repository import ConversationRepository
-from backend.repositories.p6_schedule_repository import P6ScheduleRepository
 from backend.repositories.ms_schedule_repository import MSScheduleRepository
 from backend.repositories.user_context_repository import UserContextRepository
 from backend.models.domain import UserContext
@@ -38,6 +34,14 @@ router = APIRouter()
 def _build_email_service():
     if not settings.EMAIL_ENABLED:
         return None
+
+
+def _normalize_project_type(project_type: str) -> str:
+    """Keep request compatibility while enforcing the MS-only runtime."""
+    normalized = project_type.lower().strip()
+    if normalized == "p6":
+        raise ValueError("P6 schedules are no longer supported by this MS-only service. Use project_type='msp'.")
+    return "msp"
 
     try:
         from backend.email_tools import EmailRepository, EmailService
@@ -85,7 +89,6 @@ class ChatRequest(BaseModel):
     sender_email: str = Field(..., min_length=1)
     conversation_id: Optional[str] = None
     project_type: str = Field(default="msp", min_length=1)
-    p6_schedule_id: Optional[str] = None  # Specific P6 schedule to use
 
 
 class ChatResponse(BaseModel):
@@ -155,7 +158,7 @@ async def chat_stream(
     async def event_generator():
         supabase = get_supabase()
         conv_repo = ConversationRepository(supabase)
-        p6_repo = P6ScheduleRepository(supabase)
+        ms_repo = MSScheduleRepository(supabase)
         user_ctx_repo = UserContextRepository(supabase)
         
         conversation_id = req.conversation_id or str(uuid4())
@@ -164,24 +167,13 @@ async def chat_stream(
             # Signal start
             yield sse_node_event("Initializing", "working", "Setting up context")
 
-            project_type = req.project_type.lower()
+            project_type = _normalize_project_type(req.project_type)
             agent = get_scheduling_agent(project_type)
-            
-            # Resolve P6 project ID
-            p6_proj_id = None
-            if lognos_project_id and project_type == "p6":
-                p6_proj_id = await p6_repo.resolve_p6_proj_id(
-                    lognos_project_id,
-                    req.p6_schedule_id
-                )
+
+            if lognos_project_id:
                 yield sse_reasoning_event(
                     "Initializing",
-                    f"Using P6 project {p6_proj_id}" if p6_proj_id else "No P6 schedule linked"
-                )
-            elif lognos_project_id and project_type != "p6":
-                yield sse_reasoning_event(
-                    "Initializing",
-                    f"Using MSP schedule source for project {lognos_project_id}"
+                    f"Using MS schedule source for project {lognos_project_id}"
                 )
             
             # Create or verify conversation exists
@@ -191,7 +183,6 @@ async def chat_stream(
                     conversation_id=conversation_id,
                     creator_email=req.sender_email,
                     project_id=lognos_project_id,
-                    p6_schedule_id=req.p6_schedule_id,
                 )
             
             # Save user message to display history
@@ -206,8 +197,6 @@ async def chat_stream(
             # Build context message for agent
             context_parts = []
             context_parts.append(f"Project Type: {project_type.upper()}")
-            if p6_proj_id:
-                context_parts.append(f"P6 Project ID: {p6_proj_id}")
             if lognos_project_id:
                 context_parts.append(f"Lognos Project: {lognos_project_id}")
 
@@ -241,131 +230,121 @@ async def chat_stream(
             
             yield sse_node_event("Scheduling", "working", "Executing agent")
             
-            # Initialize services and run agent
-            service = SchedulingService()
-            vector_service = VectorService()
-            ms_repo = MSScheduleRepository(supabase)
+            # Initialize dependencies and run agent
             email_service = _build_email_service()
             
             # Queue for gantt panel events from tools
             gantt_event_queue: list[dict] = []
+
+            deps = AgentDeps(
+                email_service=email_service,
+                gantt_event_queue=gantt_event_queue,
+                conversation_id=conversation_id,
+                ms_repository=ms_repo,
+                supabase_client=supabase,
+                user_context=user_context,
+                user_context_repository=user_ctx_repo,
+            )
             
-            with SafeP6Transaction() as transaction:
-                conn = transaction.conn
-                deps = AgentDeps(
-                    service=service,
-                    vector_service=vector_service,
-                    email_service=email_service,
-                    conn=conn,
-                    transaction=transaction,
-                    gantt_event_queue=gantt_event_queue,
-                    conversation_id=conversation_id,
-                    ms_repository=ms_repo,
-                    supabase_client=supabase,
-                    user_context=user_context,
-                    user_context_repository=user_ctx_repo,
-                )
+            with logfire.span(
+                "agent_run_stream",
+                message=req.message,
+                conversation_id=conversation_id,
+                project_type=project_type,
+                history_length=len(message_history),
+            ):
+                # Track response for saving
+                final_text = ""
                 
-                with logfire.span(
-                    "agent_run_stream",
-                    message=req.message,
-                    conversation_id=conversation_id,
-                    project_type=project_type,
-                    p6_proj_id=p6_proj_id,
-                    history_length=len(message_history),
-                ):
-                    # Track response for saving
-                    final_text = ""
-                    
-                    # Use capture_run_messages to get tool results even if model fails
-                    with capture_run_messages() as messages:
-                        try:
-                            # Run the agent (non-streaming for structured output)
-                            # Note: stream_text() cannot be used with output_type
-                            result = await agent.run(
-                                user_message,
-                                deps=deps,
-                                message_history=message_history,
-                                usage_limits=SCHEDULING_USAGE_LIMITS,
-                            )
-                            
-                            # Get structured output
-                            final_result = result.output
-                            
-                            # Extract message based on output type
-                            if isinstance(final_result, SchedulingResponse):
-                                final_text = final_result.message
-                            elif isinstance(final_result, ClarificationRequest):
-                                final_text = final_result.question
-                                if final_result.options:
-                                    final_text += "\n\nOptions:\n" + "\n".join(f"- {opt}" for opt in final_result.options)
-                            elif isinstance(final_result, ErrorResponse):
-                                final_text = f"Error: {final_result.message}"
-                                if final_result.suggestion:
-                                    final_text += f"\n\nSuggestion: {final_result.suggestion}"
-                            else:
-                                # Fallback for string or unexpected output
-                                final_text = str(final_result)
-                            
-                            # Send the complete response as a token event
-                            yield sse_token_event(final_text)
-                                    
-                        except UnexpectedModelBehavior as model_err:
-                            # Gemini sometimes returns empty responses after tool calls
-                            logfire.warning(
-                                "Model output validation failed, extracting tool results",
-                                error=str(model_err),
-                            )
-                            
-                            # Find tool return parts from the messages
-                            tool_results = []
-                            for msg in messages:
-                                if hasattr(msg, 'parts'):
-                                    for part in msg.parts:
-                                        if isinstance(part, ToolReturnPart):
-                                            tool_results.append(part.content)
-                            
-                            if tool_results:
-                                final_text = "Here is what I found:\n\n" + "\n\n".join(str(r) for r in tool_results)
-                                yield sse_token_event(final_text)
-                            else:
-                                final_text = f"I encountered an issue processing your request: {str(model_err)}"
-                                yield sse_token_event(final_text)
-                    
-                    # Save the new message history for next turn
-                    all_messages = list(messages)
-                    if all_messages:
-                        new_history_json = ModelMessagesTypeAdapter.dump_json(all_messages).decode()
-                        await conv_repo.save_agent_message_history(conversation_id, new_history_json)
+                # Use capture_run_messages to get tool results even if model fails
+                with capture_run_messages() as messages:
+                    try:
+                        # Run the agent (non-streaming for structured output)
+                        # Note: stream_text() cannot be used with output_type
+                        result = await agent.run(
+                            user_message,
+                            deps=deps,
+                            message_history=message_history,
+                            usage_limits=SCHEDULING_USAGE_LIMITS,
+                        )
                         
-                        logfire.info(
-                            "Agent completed",
-                            response_length=len(final_text),
-                            conversation_id=conversation_id,
-                            messages_saved=len(all_messages),
+                        # Get structured output
+                        final_result = result.output
+                        
+                        # Extract message based on output type
+                        if isinstance(final_result, SchedulingResponse):
+                            final_text = final_result.message
+                        elif isinstance(final_result, ClarificationRequest):
+                            final_text = final_result.question
+                            if final_result.options:
+                                final_text += "\n\nOptions:\n" + "\n".join(f"- {opt}" for opt in final_result.options)
+                        elif isinstance(final_result, ErrorResponse):
+                            final_text = f"Error: {final_result.message}"
+                            if final_result.suggestion:
+                                final_text += f"\n\nSuggestion: {final_result.suggestion}"
+                        else:
+                            # Fallback for string or unexpected output
+                            final_text = str(final_result)
+                        
+                        # Send the complete response as a token event
+                        yield sse_token_event(final_text)
+                                
+                    except UnexpectedModelBehavior as model_err:
+                        # Gemini sometimes returns empty responses after tool calls
+                        logfire.warning(
+                            "Model output validation failed, extracting tool results",
+                            error=str(model_err),
                         )
+                        
+                        # Find tool return parts from the messages
+                        tool_results = []
+                        for msg in messages:
+                            if hasattr(msg, 'parts'):
+                                for part in msg.parts:
+                                    if isinstance(part, ToolReturnPart):
+                                        tool_results.append(part.content)
+                        
+                        if tool_results:
+                            final_text = "Here is what I found:\n\n" + "\n\n".join(str(r) for r in tool_results)
+                            yield sse_token_event(final_text)
+                        else:
+                            final_text = f"I encountered an issue processing your request: {str(model_err)}"
+                            yield sse_token_event(final_text)
+                
+                # Save the new message history for next turn
+                all_messages = list(messages)
+                if all_messages:
+                    new_history_json = ModelMessagesTypeAdapter.dump_json(all_messages).decode()
+                    await conv_repo.save_agent_message_history(conversation_id, new_history_json)
                     
-                    # Stream any gantt panel events that were queued during tool execution
                     logfire.info(
-                        "Streaming gantt events",
-                        queue_length=len(gantt_event_queue),
-                        has_events=bool(gantt_event_queue),
+                        "Agent completed",
+                        response_length=len(final_text),
+                        conversation_id=conversation_id,
+                        messages_saved=len(all_messages),
                     )
-                    for gantt_event in gantt_event_queue:
-                        _evt_data = gantt_event.get('data') or {}
-                        _evt_rels = _evt_data.get('relationships') or []
-                        _evt_items = _evt_data.get('items') or []
-                        _evt_caps = _evt_data.get('capabilities') or {}
-                        logfire.info(
-                            "Yielding gantt event",
-                            event_type=gantt_event.get('type'),
-                            action=gantt_event.get('action'),
-                            items_count=len(_evt_items),
-                            relationships_count=len(_evt_rels),
-                            capabilities_links=_evt_caps.get('links'),
-                            relationships_sample=_evt_rels[:3] if _evt_rels else [],
-                        )
-                        yield sse_event(gantt_event)
+                
+                # Stream any gantt panel events that were queued during tool execution
+                logfire.info(
+                    "Streaming gantt events",
+                    queue_length=len(gantt_event_queue),
+                    has_events=bool(gantt_event_queue),
+                )
+                for gantt_event in gantt_event_queue:
+                    _evt_data = gantt_event.get('data') or {}
+                    _evt_rels = _evt_data.get('relationships') or []
+                    _evt_items = _evt_data.get('items') or []
+                    _evt_caps = _evt_data.get('capabilities') or {}
+                    logfire.info(
+                        "Yielding gantt event",
+                        event_type=gantt_event.get('type'),
+                        action=gantt_event.get('action'),
+                        items_count=len(_evt_items),
+                        relationships_count=len(_evt_rels),
+                        capabilities_links=_evt_caps.get('links'),
+                        relationships_sample=_evt_rels[:3] if _evt_rels else [],
+                    )
+                    yield sse_event(gantt_event)
             
             # Save assistant response to display history (always save, even if empty)
             if final_text:
@@ -428,22 +407,14 @@ async def chat_sync(
     """
     supabase = get_supabase()
     conv_repo = ConversationRepository(supabase)
-    p6_repo = P6ScheduleRepository(supabase)
+    ms_repo = MSScheduleRepository(supabase)
     user_ctx_repo = UserContextRepository(supabase)
     
     conversation_id = req.conversation_id or str(uuid4())
     
     try:
-        project_type = req.project_type.lower()
+        project_type = _normalize_project_type(req.project_type)
         agent = get_scheduling_agent(project_type)
-
-        # Resolve P6 project ID
-        p6_proj_id = None
-        if lognos_project_id and project_type == "p6":
-            p6_proj_id = await p6_repo.resolve_p6_proj_id(
-                lognos_project_id,
-                req.p6_schedule_id
-            )
         
         # Create or verify conversation exists
         conv_exists = await conv_repo.conversation_exists(conversation_id)
@@ -452,7 +423,6 @@ async def chat_sync(
                 conversation_id=conversation_id,
                 creator_email=req.sender_email,
                 project_id=lognos_project_id,
-                p6_schedule_id=req.p6_schedule_id,
             )
         
         # Save user message
@@ -464,8 +434,6 @@ async def chat_sync(
         
         # Build context
         context_parts = [f"Project Type: {project_type.upper()}"]
-        if p6_proj_id:
-            context_parts.append(f"P6 Project ID: {p6_proj_id}")
         if lognos_project_id:
             context_parts.append(f"Lognos Project: {lognos_project_id}")
 
@@ -496,50 +464,41 @@ async def chat_sync(
                 message_history = []
         
         # Run agent
-        service = SchedulingService()
-        vector_service = VectorService()
         email_service = _build_email_service()
+        deps = AgentDeps(
+            email_service=email_service,
+            conversation_id=conversation_id,
+            ms_repository=ms_repo,
+            supabase_client=supabase,
+            user_context=user_context,
+            user_context_repository=user_ctx_repo,
+        )
         
-        with SafeP6Transaction() as transaction:
-            conn = transaction.conn
-            deps = AgentDeps(
-                service=service,
-                vector_service=vector_service,
-                email_service=email_service,
-                conn=conn,
-                transaction=transaction,
-                conversation_id=conversation_id,
-                ms_repository=MSScheduleRepository(supabase),
-                supabase_client=supabase,
-                user_context=user_context,
-                user_context_repository=user_ctx_repo,
-            )
-            
-            with logfire.span("agent_run_sync", message=req.message, project_type=project_type, p6_proj_id=p6_proj_id):
-                with capture_run_messages() as messages:
-                    result = await agent.run(
-                        user_message,
-                        deps=deps,
-                        message_history=message_history,
-                        usage_limits=SCHEDULING_USAGE_LIMITS,  # Prevent runaway loops
-                    )
-                    
-                    # Extract response based on output type
-                    final_result = result.output
-                    if isinstance(final_result, SchedulingResponse):
-                        final_response = final_result.message
-                    elif isinstance(final_result, ClarificationRequest):
-                        final_response = final_result.question
-                    elif isinstance(final_result, ErrorResponse):
-                        final_response = final_result.message
-                    else:
-                        final_response = str(final_result)
-                    
-                    # Save message history
-                    all_messages = list(messages)
-                    if all_messages:
-                        new_history_json = ModelMessagesTypeAdapter.dump_json(all_messages).decode()
-                        await conv_repo.save_agent_message_history(conversation_id, new_history_json)
+        with logfire.span("agent_run_sync", message=req.message, project_type=project_type):
+            with capture_run_messages() as messages:
+                result = await agent.run(
+                    user_message,
+                    deps=deps,
+                    message_history=message_history,
+                    usage_limits=SCHEDULING_USAGE_LIMITS,  # Prevent runaway loops
+                )
+                
+                # Extract response based on output type
+                final_result = result.output
+                if isinstance(final_result, SchedulingResponse):
+                    final_response = final_result.message
+                elif isinstance(final_result, ClarificationRequest):
+                    final_response = final_result.question
+                elif isinstance(final_result, ErrorResponse):
+                    final_response = final_result.message
+                else:
+                    final_response = str(final_result)
+                
+                # Save message history
+                all_messages = list(messages)
+                if all_messages:
+                    new_history_json = ModelMessagesTypeAdapter.dump_json(all_messages).decode()
+                    await conv_repo.save_agent_message_history(conversation_id, new_history_json)
         
         # Save assistant response
         await conv_repo.save_message(
@@ -555,6 +514,8 @@ async def chat_sync(
             tool_calls=[],
         )
         
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logfire.error("Chat sync error", error=str(e), conversation_id=conversation_id)
         

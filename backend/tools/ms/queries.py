@@ -9,10 +9,12 @@ from backend.models.io import (
     ListScheduleVersionsMsRequest,
     GetScheduleOverviewMsRequest,
     ListActivitiesMsRequest,
+    SearchActivitiesMsRequest,
     GetActivityMsRequest,
     GetProjectConstraintsMsRequest,
     GetCalendarMsRequest,
 )
+from backend.services.activity_semantic_search import ActivitySemanticSearchService
 
 
 @logfire.instrument("list_schedule_versions_ms")
@@ -268,6 +270,69 @@ async def list_activities_ms(
     except Exception as e:
         logfire.error("Error in list_activities_ms", error=str(e))
         return f"Error: {str(e)}"
+
+
+@logfire.instrument("search_activities_ms")
+async def search_activities_ms(
+    ctx: RunContext[AgentDeps],
+    req: SearchActivitiesMsRequest,
+) -> str:
+    """Semantically search MS Project activities by natural language.
+
+    Use this when the user describes an activity imprecisely, references work by
+    natural language, or asks to find likely matching activities before applying
+    updates. Exact filters should use list_activities_ms.
+    """
+    if not ctx.deps.ms_repository:
+        return "MS Schedule repository not available. Check configuration."
+
+    try:
+        version_id = req.version_id
+        if version_id is None:
+            if not req.project_name:
+                return "Provide either version_id or project_name for semantic activity search."
+            version = await ctx.deps.ms_repository.get_current_version(req.project_name)
+            if not version:
+                return f"No current schedule found for project '{req.project_name}'."
+            version_id = version['id']
+
+        embedding = await ActivitySemanticSearchService().embed_query(req.query)
+        matches = await ctx.deps.ms_repository.search_activities_semantic(
+            query_text=req.query,
+            query_embedding=embedding,
+            version_id=version_id,
+            limit=req.limit,
+            match_threshold=req.match_threshold,
+            wbs_prefix=req.wbs_prefix,
+            owner=req.owner,
+            scope_owner=req.scope_owner,
+        )
+
+        if not matches:
+            return "No semantic activity matches found. Try a more specific description or use list_activities_ms with exact filters."
+
+        lines = [
+            f"Semantic activity matches for '{req.query}' (version {version_id}):",
+            f"{'Score':<7} {'ID':<8} {'MS UID':<8} {'WBS':<14} {'Name':<45}",
+            "-" * 92,
+        ]
+
+        for match in matches:
+            score = match.get('similarity')
+            score_text = f"{float(score):.3f}" if score is not None else "-"
+            activity_id = match.get('id') or match.get('activity_id') or ""
+            ms_uid = match.get('ms_uid') or ""
+            wbs = (match.get('wbs') or "")[:13]
+            name = (match.get('name') or match.get('activity_name') or "Unknown")[:44]
+            lines.append(f"{score_text:<7} {str(activity_id):<8} {str(ms_uid):<8} {wbs:<14} {name:<45}")
+
+        lines.append("")
+        lines.append("Use get_activity_ms with the ID for full details, or load_schedule_ms before workspace edits.")
+        return "\n".join(lines)
+
+    except Exception as e:
+        logfire.error("Error in search_activities_ms", error=str(e))
+        return f"Error searching activities: {str(e)}"
 
 
 @logfire.instrument("get_activity_ms")

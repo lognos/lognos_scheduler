@@ -582,7 +582,7 @@ The following are **not** in scope for this implementation:
 - **Version-to-version comparison** (comparing two full schedule versions side by side): this requires cross-version activity matching logic.
 - **Baseline version selector** (choosing which baseline to compare against): the inline `baseline_*` fields represent the primary baseline (Baseline 0 in MS Project terms).
 - **Slippage color coding** on bars: deferred to future iteration.
-- **Baseline data for P6 schedules**: P6 uses a different data model; this proposal covers MS Project schedules only.
+- **Non-MS schedule formats**: This proposal covers MS Project schedules only.
 - **Progress overlay** (percent complete shading on bars): orthogonal feature, can be combined later.
 - **Earned Value calculations**: uses baseline data but is a separate analytics feature.
 

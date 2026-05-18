@@ -18,7 +18,7 @@ interface UseBarPositionsOptions {
    * Sorting mode for activities:
    * - 'preserve': Keep backend order (MS Project with WBS hierarchy)
    * - 'start-date': Simple sort by start date (default)
-   * - 'grouped': Group-aware sorting for P6 grouped displays
+  * - 'grouped': Group-aware sorting for grouped schedule displays
    */
   sortMode?: SortMode;
 }
@@ -100,7 +100,7 @@ function sortItems(items: ScheduleItem[], mode: SortMode): ScheduleItem[] {
     );
   }
 
-  // 'grouped' mode: P6 with activity code grouping
+  // 'grouped' mode: schedule items with activity code grouping
   return [...items].sort((a, b) => {
     // 1. Sort by group_name (nulls/undefined last)
     const groupA = a.group_name ?? '';

@@ -417,7 +417,7 @@ import { ScheduleItem } from '@/types/schedule';
  */
 export type SortMode = 
   | 'preserve'      // Keep backend order (MS Project hierarchy)
-  | 'start-date'    // Sort by start date (simple P6 display)
+  | 'start-date'    // Sort by start date for simple chronological display
   | 'grouped';      // Group-aware: group name → summaries first → start date
 
 /**
@@ -599,7 +599,7 @@ export function useTimeline({
 - `GanttPanel` has additional sorting/grouping logic that we preserve via the `preserveOrder` option
 
 **Additional responsibility — sorting:**
-- For P6 schedules: Sort by start date (default behavior)
+- For simple schedule views: Sort by start date (default behavior)
 - For MS Project schedules: Preserve backend order to maintain WBS hierarchy (`preserveOrder: true`)
 
 ```typescript
@@ -614,7 +614,7 @@ import { PositionedItem } from './types';
  */
 export type SortMode = 
   | 'preserve'      // Keep backend order (MS Project hierarchy)
-  | 'start-date'    // Sort by start date (simple P6 display)
+  | 'start-date'    // Sort by start date for simple chronological display
   | 'grouped';      // Group-aware: group name → summaries first → start date
 
 interface UseBarPositionsOptions {
@@ -625,7 +625,7 @@ interface UseBarPositionsOptions {
    * Sorting mode for activities:
    * - 'preserve': Keep backend order (MS Project with WBS hierarchy)
    * - 'start-date': Simple sort by start date (default)
-   * - 'grouped': Group-aware sorting for P6 grouped displays
+  * - 'grouped': Group-aware sorting for grouped schedule displays
    */
   sortMode?: SortMode;
 }
@@ -689,7 +689,7 @@ function sortItems(items: ScheduleItem[], mode: SortMode): ScheduleItem[] {
     );
   }
 
-  // 'grouped' mode: P6 with activity code grouping
+  // 'grouped' mode: schedule items with activity code grouping
   return [...items].sort((a, b) => {
     // 1. Sort by group_name (nulls/undefined last)
     const groupA = a.group_name ?? '';
@@ -829,8 +829,8 @@ export const GanttPanel: React.FC<GanttPanelProps> = ({ data, onClose }) => {
   const sortMode = data.preserve_order 
     ? 'preserve'           // MS Project: keep WBS hierarchy
     : data.grouping 
-      ? 'grouped'          // P6 with grouping: group-aware sort
-      : 'start-date';      // P6 ungrouped: simple chronological
+      ? 'grouped'          // Group-aware sort
+      : 'start-date';      // Simple chronological sort
   
   const positionedItems = useBarPositions({
     items: data.items,

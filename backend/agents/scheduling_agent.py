@@ -1,4 +1,7 @@
-from pydantic_ai import Agent, UsageLimits
+from inspect import signature
+
+from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -15,36 +18,9 @@ from backend.tools import (
     # Base
     AgentDeps,
     
-    # P6 Query tools
-    get_activity_p6,
-    search_activities_p6,
-    list_projects_p6,
-    list_activities_p6,
-    list_activity_codes_p6,
-    get_activity_codes_p6,
-    
-    # P6 Activity tools
-    create_activity_p6,
-    update_activity_status_p6,
-    update_progress_p6,
-    
-    # P6 Relationship tools
-    create_relationship_p6,
-    update_relationship_p6,
-    delete_relationship_p6,
-    
-    # P6 Project tools
-    create_project_p6,
-    
-    # P6 Activity code tools
-    assign_activity_codes_p6,
-    remove_activity_codes_p6,
-    bulk_assign_activity_codes_p6,
-    
     # Workspace tools
     get_workspace_status_ws,
     get_driving_path_ws,
-    load_schedule_ws,
     create_schedule_ws,
     clear_schedule_ws,
     calculate_gantt_ws,
@@ -66,9 +42,6 @@ from backend.tools import (
     snapshot_baseline_ws,
     get_whatif_comparison_ws,
     
-    # Indexing tools
-    index_project,
-
     # Context tools
     get_team_data,
 )
@@ -77,6 +50,7 @@ from backend.tools.ms import (
     list_schedule_versions_ms,
     get_schedule_overview_ms,
     list_activities_ms,
+    search_activities_ms,
     get_activity_ms,
     get_project_constraints_ms,
     get_calendar_ms,
@@ -102,8 +76,8 @@ from backend.config.settings import settings
 # Usage limits to pass at runtime (prevents runaway loops)
 SCHEDULING_USAGE_LIMITS = UsageLimits(
     request_limit=30,  # Maximum requests per run (increased for complex schedules)
-    input_tokens_limit=500_000,  # Input token limit (Gemini 2.5 Flash supports 1M)
-    output_tokens_limit=32_000,  # Output token limit (increased as safety net)
+    request_tokens_limit=500_000,  # Input token limit (Gemini 2.5 Flash supports 1M)
+    response_tokens_limit=32_000,  # Output token limit (increased as safety net)
 )
 
 
@@ -120,7 +94,7 @@ def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
     injects a stop signal to prevent infinite loops.
     
     This is critical because:
-    1. Tool returns (e.g., list_activities_p6) can be thousands of tokens
+    1. Tool returns (e.g., list_activities_ms) can be thousands of tokens
     2. Each conversation turn accumulates more tool results
     3. Without filtering, input context can grow to 100k+ tokens
     4. Large contexts cause Gemini to generate extremely verbose responses (65k+ tokens)
@@ -249,23 +223,30 @@ def filter_tool_history(messages: list[ModelMessage]) -> list[ModelMessage]:
     return filtered
 
 def _build_agent(system_prompt: str, tools: list) -> Agent:
-    return Agent(
-        settings.GOOGLE_DEFAULT_MODEL,
+    agent_kwargs = dict(
         deps_type=AgentDeps,
-        output_type=AgentOutput,
         retries=5,
         model_settings=ModelSettings(
             temperature=0.3,
         ),
-        history_processors=[filter_tool_history],
         system_prompt=system_prompt,
         tools=tools,
     )
+    agent_parameters = signature(Agent).parameters
+    if "output_type" in agent_parameters:
+        agent_kwargs["output_type"] = AgentOutput
+    else:
+        agent_kwargs["result_type"] = AgentOutput
+    if "history_processors" in agent_parameters:
+        agent_kwargs["history_processors"] = [filter_tool_history]
+
+    return Agent(settings.GOOGLE_DEFAULT_MODEL, **agent_kwargs)
 
 
 WORKSPACE_TOOLS = [
     get_workspace_status_ws,
     get_driving_path_ws,
+    create_schedule_ws,
     clear_schedule_ws,
     calculate_gantt_ws,
     modify_activity_ws,
@@ -289,35 +270,13 @@ MSP_TOOLS = [
     list_schedule_versions_ms,
     get_schedule_overview_ms,
     list_activities_ms,
+    search_activities_ms,
     get_activity_ms,
     get_project_constraints_ms,
     get_calendar_ms,
     load_schedule_ms,
     create_schedule_subversion_ms,
     promote_subversion_ms,
-]
-
-
-P6_TOOLS = [
-    get_activity_p6,
-    search_activities_p6,
-    list_projects_p6,
-    list_activities_p6,
-    list_activity_codes_p6,
-    get_activity_codes_p6,
-    create_activity_p6,
-    update_activity_status_p6,
-    update_progress_p6,
-    create_relationship_p6,
-    update_relationship_p6,
-    delete_relationship_p6,
-    create_project_p6,
-    assign_activity_codes_p6,
-    remove_activity_codes_p6,
-    bulk_assign_activity_codes_p6,
-    load_schedule_ws,
-    create_schedule_ws,
-    index_project,
 ]
 
 
@@ -343,30 +302,16 @@ _MSP_SYSTEM_PROMPT = PromptLoader.compose_prompts([
     "scheduler_msp.xml.j2",
 ])
 
-_P6_SYSTEM_PROMPT = PromptLoader.compose_prompts([
-    "scheduler_general.xml.j2",
-    "scheduler_p6.xml.j2",
-])
-
-
 _msp_scheduling_agent = _build_agent(
     system_prompt=_MSP_SYSTEM_PROMPT,
     tools=MSP_TOOLS + WORKSPACE_TOOLS + COMMON_TOOLS,
 )
 
-_p6_scheduling_agent = _build_agent(
-    system_prompt=_P6_SYSTEM_PROMPT,
-    tools=P6_TOOLS + WORKSPACE_TOOLS + COMMON_TOOLS,
-)
-
 
 def get_scheduling_agent(project_type: str = "msp") -> Agent:
-    """Return the domain-scoped scheduling agent.
-
-    Temporary default is MSP-first.
-    """
+    """Return the MS/workspace scheduling agent."""
     if project_type.lower() == "p6":
-        return _p6_scheduling_agent
+        raise ValueError("P6 schedules are no longer supported by this MS-only service.")
     return _msp_scheduling_agent
 
 

@@ -8,12 +8,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     # App
-    APP_NAME: str = "P6 Scheduling Agent"
+    APP_NAME: str = "Lognos Scheduling Agent"
     DEBUG: bool = False
     PORT: int = Field(default=8500, description="Server port")
-
-    # Database - P6 SQLite
-    P6_DB_LOC: str = Field(default="p6.db", description="Path to the P6 SQLite database file")
 
     # Database - Supabase
     SUPABASE_URL: str = Field(..., description="Supabase project URL")
@@ -23,6 +20,8 @@ class Settings(BaseSettings):
     # AI
     GEMINI_API_KEY: str = Field(..., alias="GOOGLE_API_KEY", description="Google Gemini API Key")
     GOOGLE_DEFAULT_MODEL: str = Field(default="google-gla:gemini-3-flash-preview", description="Default Google AI Model")
+    SCHEDULE_EMBEDDING_MODEL: str = Field(default="models/gemini-embedding-001", description="Embedding model for MS schedule activity search")
+    SCHEDULE_EMBEDDING_DIMENSIONS: int = Field(default=1536, description="Embedding dimensions for lognos_schedule.schedule_activities.embedding")
     LOGFIRE_TOKEN: str | None = Field(default=None, description="Logfire Write Token")
 
     # Email integration (Phase 0 scaffolding)

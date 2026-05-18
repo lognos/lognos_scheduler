@@ -696,7 +696,7 @@ For now, only updates matching the **current** `schedule_version_id` are shown.
 - **Update editing/deletion**: Out of scope; managed via agent conversations or admin tools.
 - **Notification for new updates**: Real-time push of new updates to the Gantt is deferred.
 - **`queued_activity_updates` table**: This table is for staged agent-generated updates and is not shown on the Gantt.
-- **P6 schedule updates**: This proposal covers MS Project schedules only (consistent with the existing data model).
+- **Non-MS schedule updates**: This proposal covers MS Project schedules only.
 
 ---
 

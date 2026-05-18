@@ -30,7 +30,6 @@ class ConversationRepository:
         conversation_id: str,
         creator_email: str,
         project_id: Optional[str] = None,
-        p6_schedule_id: Optional[str] = None,
         title: str = "New conversation",
     ) -> dict:
         """Create a new conversation record."""
@@ -42,8 +41,6 @@ class ConversationRepository:
         }
         if project_id:
             data["project_id"] = project_id
-        if p6_schedule_id:
-            data["p6_schedule_id"] = p6_schedule_id
             
         result = (
             self.supabase
@@ -107,7 +104,6 @@ class ConversationRepository:
             conversation_id=conv["conversation_id"],
             creator_email=conv["creator_email"],
             project_id=conv.get("project_id"),
-            p6_schedule_id=conv.get("p6_schedule_id"),
             title=conv["title"],
             message_count=conv["message_count"],
             last_message_at=conv.get("last_message_at"),

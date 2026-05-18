@@ -1,10 +1,14 @@
-.PHONY: p6 backend help
+.PHONY: frontend backend sch_fe sch_be help
 
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  make p6      - Start the frontend (Next.js on port 3900)"
-	@echo "  make backend - Start the backend (FastAPI with uvicorn)"
+	@echo "  make frontend - Start the frontend (Next.js on port 3900)"
+	@echo "  make backend  - Start the backend (FastAPI with uvicorn)"
+
+frontend: sch_fe
+
+backend: sch_be
 
 # Start frontend
 sch_fe:

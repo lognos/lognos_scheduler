@@ -72,4 +72,4 @@ Ensure the scheduling agent is user-aware by default and can fetch full project 
 ## Notes
 
 - The implementation explicitly uses `lognos_comm.users` as requested.
-- `get_team_data` is always available in `COMMON_TOOLS` so both MSP and P6 agent variants can call it.
+- `get_team_data` is always available in `COMMON_TOOLS` so the scheduling agent can resolve project team context.

@@ -613,8 +613,8 @@ export const SAGanttPanel: React.FC<SAGanttPanelProps> = ({
   const sortMode: SortMode = data.preserve_order
     ? 'preserve' // MS Project: keep WBS hierarchy
     : data.grouping
-      ? 'grouped' // P6 with grouping: group-aware sort
-      : 'start-date'; // P6 ungrouped: simple chronological
+      ? 'grouped' // Group-aware sort
+      : 'start-date'; // Simple chronological sort
 
   const positionedItems = useBarPositions({
     items: data.items,

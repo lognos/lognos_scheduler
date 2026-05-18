@@ -63,7 +63,7 @@ export interface GanttFilter {
   wbs_path?: string;
   /** Show only critical path activities */
   critical_only?: boolean;
-  /** P6-style critical definition used by the backend view */
+  /** Critical definition used by the backend schedule view */
   critical_definition?: 'total_float' | 'longest_path' | 'free_float_path';
   /** Total-float threshold, in days, when critical_definition is total_float */
   float_threshold_d?: number | null;

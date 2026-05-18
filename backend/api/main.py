@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logfire
 
-from backend.api.routers import chat, conversations, p6_schedules, projects, schedule_views
+from backend.api.routers import chat, conversations, projects, schedule_views
 from backend.config.settings import settings
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
@@ -25,12 +25,14 @@ app.add_middleware(
 if settings.LOGFIRE_TOKEN:
     logfire.configure(token=settings.LOGFIRE_TOKEN)
     logfire.instrument_fastapi(app)
-    logfire.instrument_pydantic_ai()  # Correct API for Pydantic AI agents
+    try:
+        logfire.instrument_pydantic_ai()
+    except ImportError as exc:
+        logfire.warning("Pydantic AI Logfire instrumentation unavailable", error=str(exc))
 
 # Include Routers
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
-app.include_router(p6_schedules.router, prefix="/api/v1/p6-schedules", tags=["p6-schedules"])
 app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
 app.include_router(schedule_views.router, prefix="/api/v1/schedule-views", tags=["schedule-views"])
 
@@ -40,7 +42,7 @@ async def health_check():
 
 @app.get("/api/v1/health")
 async def api_health_check():
-    return {"status": "ok", "service": "scheduling-assistant"}
+    return {"status": "ok", "service": "lognos-scheduling-agent"}
 
 if __name__ == "__main__":
     import uvicorn

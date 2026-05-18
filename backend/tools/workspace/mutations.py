@@ -12,7 +12,6 @@ from backend.services.gantt_payload_builder import (
     build_relationship_projections,
 )
 from backend.models.io import (
-    LoadScheduleWsRequest,
     CreateScheduleWsRequest,
     CalculateGanttWsRequest,
     ModifyActivityWsRequest,
@@ -175,79 +174,6 @@ def _build_ms_project_hierarchy(
     return gantt_items
 
 
-@logfire.instrument("load_schedule_ws")
-async def load_schedule_ws(
-    ctx: RunContext[AgentDeps],
-    req: LoadScheduleWsRequest
-) -> str:
-    """Load a P6 project schedule into the workspace for analysis.
-    
-    This creates an in-memory copy of the schedule that can be modified
-    and recalculated without affecting the P6 database.
-    
-    Args:
-        ctx: Runtime context with conversation_id in deps
-        req: Request containing proj_id to load
-    
-    Returns:
-        Summary of loaded activities and relationships
-    """
-    try:
-        conversation_id = ctx.deps.conversation_id
-        if not conversation_id:
-            return "Error: No conversation_id available. Cannot load workspace."
-        
-        # Load schedule data from P6 via service
-        schedule_data = ctx.deps.service.load_schedule_for_workspace(
-            req.proj_id, 
-            conn=ctx.deps.conn
-        )
-        
-        project_info = schedule_data['project_info']
-        
-        # Convert to DataFrames
-        activities_df = pd.DataFrame(schedule_data['activities'])
-        relationships_df = pd.DataFrame(schedule_data['relationships'])
-        activity_codes_df = pd.DataFrame(schedule_data['activity_codes'])
-        
-        # Parse P6 project dates
-        p6_start = None
-        p6_finish = None
-        if project_info.get('plan_start_date'):
-            try:
-                p6_start = pd.to_datetime(project_info['plan_start_date']).date()
-            except Exception:
-                pass
-        if project_info.get('plan_end_date'):
-            try:
-                p6_finish = pd.to_datetime(project_info['plan_end_date']).date()
-            except Exception:
-                pass
-        
-        # Load into workspace
-        workspace = schedule_state_manager.load_from_p6(
-            conversation_id=conversation_id,
-            project_id=req.proj_id,
-            project_name=project_info.get('project_name', 'Unknown'),
-            activities_df=activities_df,
-            relationships_df=relationships_df,
-            activity_codes_df=activity_codes_df,
-            code_types_with_values=schedule_data['available_codes'],
-            project_start=p6_start,
-            project_finish=p6_finish
-        )
-        
-        # Minimal response to reduce token usage
-        activity_count = len(workspace.activities_df)
-        return f"Loaded '{project_info.get('project_name', 'Unknown')}': {activity_count} activities. Use calculate_gantt_ws to see Gantt chart."
-        
-    except ValueError as e:
-        return f"Error loading schedule: {e}"
-    except Exception as e:
-        logfire.error("Error in load_schedule_ws", error=str(e))
-        return f"Error loading schedule: {str(e)}"
-
-
 @logfire.instrument("calculate_gantt_ws")
 async def calculate_gantt_ws(
     ctx: RunContext[AgentDeps],
@@ -270,7 +196,7 @@ async def calculate_gantt_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         if workspace.activities_df.empty:
             return "Schedule workspace is empty. Load a schedule first."
@@ -348,7 +274,7 @@ async def calculate_gantt_ws(
             filtered_df = workspace.activities_df
         
         # Build Gantt data for frontend
-        hours_per_day = 8.0  # Standard P6 calendar assumption
+        hours_per_day = 8.0  # Default working calendar assumption
         
         def build_activity_item(row: pd.Series, level: int = 2, parent_id: str | None = None) -> dict:
             """Build a Gantt item dict from a DataFrame row."""
@@ -411,13 +337,13 @@ async def calculate_gantt_ws(
                 hours_per_day, 
                 req.show_details
             )
-            # Skip P6 group processing - MS hierarchy already built
+            # Skip generic group processing - MS hierarchy already built
             groups = None
         elif req.group_by:
-            # Determine grouping source (P6 schedules only at this point)
+            # Determine grouping source for non-MS draft schedules
             if req.group_by.lower() == 'wbs':
                 grouping_applied = 'WBS'
-                # P6: Group by first WBS segment (use / as separator)
+                # Group by first WBS segment (use / as separator for draft/imported data)
                 groups: dict[str, list[int]] = {}
                 for _, row in filtered_df.iterrows():
                     wbs_path = row.get('wbs_path', '') or ''
@@ -457,7 +383,7 @@ async def calculate_gantt_ws(
                     # No activity codes - all filtered activities are unassigned
                     groups['Unassigned'] = filtered_df['task_id'].tolist()
             
-            # Build hierarchical items for P6-style grouping (skip if MS hierarchy was already built)
+            # Build hierarchical items for generic grouping (skip if MS hierarchy was already built)
             if groups is not None:
                 summary_id_counter = -1000  # Use negative IDs for synthetic summary items
                 
@@ -737,7 +663,7 @@ async def modify_activity_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Find the activity
         mask = workspace.activities_df['task_id'] == req.task_id
@@ -806,7 +732,7 @@ async def add_activity_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Check if task_code already exists
         if req.task_code in workspace.activities_df['task_code'].values:
@@ -892,7 +818,7 @@ async def add_relationship_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Validate activities exist
         pred_exists = req.predecessor_task_id in workspace.activities_df['task_id'].values
@@ -911,7 +837,7 @@ async def add_relationship_ws(
         if dup_mask.any():
             return f"Relationship from {req.predecessor_task_id} to {req.successor_task_id} already exists."
         
-        # Map relationship type to P6 code
+        # Map relationship type to the normalized relationship code used by the workspace
         type_map = {'FS': 'PR_FS', 'SS': 'PR_SS', 'FF': 'PR_FF', 'SF': 'PR_SF'}
         pred_type = type_map[req.relationship_type]
         
@@ -972,7 +898,7 @@ async def modify_relationship_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Find the relationship
         rel_mask = (
@@ -1058,8 +984,8 @@ async def create_schedule_ws(
     """Create a new empty schedule workspace for draft planning.
     
     Use this tool to start building a schedule from scratch WITHOUT
-    creating anything in the P6 database. Perfect for:
-    - Draft schedules for review before committing to P6
+    creating anything in the database. Perfect for:
+    - Draft schedules for review before committing changes
     - What-if analysis and exploration
     - Building schedules collaboratively before approval
     
@@ -1144,7 +1070,7 @@ async def assign_activity_codes_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Validate activity exists
         if req.task_id not in workspace.activities_df['task_id'].values:
@@ -1268,7 +1194,7 @@ async def bulk_assign_activity_codes_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Validate all activities exist
         existing_task_ids = set(workspace.activities_df['task_id'].values)
@@ -1371,7 +1297,7 @@ async def remove_activity_codes_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Validate activity exists
         if req.task_id not in workspace.activities_df['task_id'].values:
@@ -1438,7 +1364,7 @@ async def get_activity_codes_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         if workspace.activity_codes_df.empty:
             return "No activity codes assigned in workspace."
@@ -1494,7 +1420,7 @@ async def clear_schedule_ws(ctx: RunContext[AgentDeps]) -> str:
     """Clear the current schedule workspace to start fresh.
     
     Use this to discard all unsaved changes and start with an empty workspace.
-    This does NOT affect any data in P6 - only the in-memory draft is cleared.
+    This does not affect persisted schedule data; only the in-memory draft is cleared.
     
     Warning: This action cannot be undone. All activities and relationships
     in the current workspace will be lost.
@@ -1528,7 +1454,7 @@ async def clear_schedule_ws(ctx: RunContext[AgentDeps]) -> str:
             source=source
         )
         
-        source_info = "(loaded from P6)" if source == "p6_loaded" else "(draft)"
+        source_info = "(loaded from MS)" if source == "ms_loaded" else "(draft)"
         return (
             f"Cleared workspace '{project_name}' {source_info} "
             f"with {activity_count} activities and {relationship_count} relationships. "
@@ -1548,7 +1474,7 @@ async def delete_relationship_ws(
     """Delete a relationship between activities in the workspace.
     
     Use this tool to remove a dependency link between two activities.
-    This is a temporary change - it does not affect the P6 database.
+    This is a temporary workspace change.
     
     Args:
         ctx: Runtime context with conversation_id in deps
@@ -1562,7 +1488,7 @@ async def delete_relationship_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Find the relationship
         rel_mask = (
@@ -1614,7 +1540,7 @@ async def delete_activity_ws(
     """Delete an activity from the schedule workspace.
     
     Use this tool to remove an activity and all its relationships from the workspace.
-    This is a temporary change - it does not affect the P6 database.
+    This is a temporary workspace change.
     
     Note: Any relationships where this activity is predecessor or successor
     will also be automatically removed.
@@ -1631,7 +1557,7 @@ async def delete_activity_ws(
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws first."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         # Find the activity
         activity_mask = workspace.activities_df['task_id'] == req.task_id
@@ -1702,7 +1628,7 @@ async def snapshot_baseline_ws(
     automatically render baseline ghost bars on every activity.
 
     Typical what-if workflow:
-    1. load_schedule_ms (or load_schedule_ws)
+    1. load_schedule_ms
     2. calculate_gantt_ws          -> see current plan
     3. snapshot_baseline_ws        -> freeze dates as baseline
     4. modify_activity_ws (one or more changes)

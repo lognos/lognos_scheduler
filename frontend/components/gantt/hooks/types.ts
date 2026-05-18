@@ -12,7 +12,7 @@ import { ScheduleItem, ScheduleRelationship, RelationshipType } from '@/types/sc
  */
 export type SortMode =
   | 'preserve' // Keep backend order (MS Project hierarchy)
-  | 'start-date' // Sort by start date (simple P6 display)
+  | 'start-date' // Sort by start date for simple chronological display
   | 'grouped'; // Group-aware: group name → summaries first → start date
 
 /**

@@ -246,6 +246,104 @@ class MSScheduleRepository:
             return result.data
         except Exception:
             return None
+
+    @logfire.instrument("ms_repo.search_activities_semantic")
+    async def search_activities_semantic(
+        self,
+        *,
+        query_text: str,
+        query_embedding: list[float],
+        version_id: int,
+        limit: int = 10,
+        match_threshold: float = 0.2,
+        wbs_prefix: Optional[str] = None,
+        owner: Optional[str] = None,
+        scope_owner: Optional[str] = None,
+    ) -> list[dict]:
+        """Search activities using the MS schedule embedding vector.
+
+        The primary path calls the additive Supabase RPC defined in migration 003.
+        If that RPC has not been deployed yet, this falls back to a bounded text
+        search so the tool can still return useful results during local cleanup.
+        """
+        params = {
+            "query_embedding": query_embedding,
+            "target_version_id": version_id,
+            "match_threshold": match_threshold,
+            "match_count": limit,
+            "wbs_prefix": wbs_prefix,
+            "owner_filter": owner,
+            "scope_owner_filter": scope_owner,
+        }
+
+        try:
+            result = (
+                self.supabase
+                .schema(self.SCHEMA)
+                .rpc("match_schedule_activities", params)
+                .execute()
+            )
+            return result.data or []
+        except Exception as error:
+            logfire.warning(
+                "Semantic search RPC unavailable; using text fallback",
+                error=str(error),
+                version_id=version_id,
+            )
+            return await self._search_activities_text_fallback(
+                query_text=query_text,
+                version_id=version_id,
+                limit=limit,
+                wbs_prefix=wbs_prefix,
+                owner=owner,
+                scope_owner=scope_owner,
+            )
+
+    async def _search_activities_text_fallback(
+        self,
+        *,
+        query_text: str,
+        version_id: int,
+        limit: int,
+        wbs_prefix: Optional[str] = None,
+        owner: Optional[str] = None,
+        scope_owner: Optional[str] = None,
+    ) -> list[dict]:
+        """Bounded text fallback for local/dev environments without the RPC."""
+        query = self._table('schedule_activities') \
+            .select(
+                'id, schedule_version_id, ms_uid, name, name_verbose, wbs, start, finish, '
+                'duration_d, total_float_d, percent_complete, is_milestone, is_summary, '
+                'owner, scope_owner, notes'
+            ) \
+            .eq('schedule_version_id', version_id) \
+            .limit(1000)
+
+        if wbs_prefix:
+            query = query.like('wbs', f'{wbs_prefix}%')
+        if owner:
+            query = query.eq('owner', owner)
+        if scope_owner:
+            query = query.eq('scope_owner', scope_owner)
+
+        rows = query.execute().data or []
+        terms = [term for term in query_text.lower().split() if term]
+
+        scored: list[dict] = []
+        for row in rows:
+            haystack = " ".join(
+                str(row.get(field) or "")
+                for field in ('name', 'name_verbose', 'wbs', 'owner', 'scope_owner', 'notes')
+            ).lower()
+            score = sum(1 for term in terms if term in haystack)
+            if score <= 0:
+                continue
+            row = dict(row)
+            row['similarity'] = score / max(len(terms), 1)
+            scored.append(row)
+
+        scored.sort(key=lambda row: row.get('similarity', 0), reverse=True)
+        return scored[:limit]
     
     # =========================================================================
     # Relationship Operations

@@ -29,7 +29,7 @@ async def get_workspace_status_ws(ctx: RunContext[AgentDeps]) -> str:
         workspace = schedule_state_manager.get(conversation_id)
         
         if not workspace:
-            return "No schedule workspace active. Use load_schedule_ws to load a project."
+            return "No schedule workspace active. Use load_schedule_ms or create_schedule_ws first."
         
         status_parts = [
             f"Project: {workspace.project_name or workspace.project_id}",

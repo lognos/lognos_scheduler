@@ -39,10 +39,8 @@ class ScheduleWorkspace:
     
     Maintains DataFrames + metadata per conversation session.
     
-    Activity Codes are loaded from P6 tables:
-    - ACTVTYPE: Code type definitions (Phase, Area, Responsibility, etc.)
-    - ACTVCODE: Code values (hierarchical, e.g., Construction -> Civil)
-    - TASKACTV: Code assignments to tasks (one value per code type per task)
+    Activity codes are represented as task/code type/code value rows when
+    available from a schedule source or draft workspace.
     
     All filtering happens on these DataFrames - no database queries.
     """
@@ -54,7 +52,7 @@ class ScheduleWorkspace:
     activities_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     relationships_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     
-    # Activity Code data (loaded from P6, used for filtering)
+    # Activity Code data used for filtering
     # Columns: task_id, code_type_name, code_value_name
     activity_codes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     
@@ -64,7 +62,7 @@ class ScheduleWorkspace:
     
     # State tracking
     is_modified: bool = False
-    source: str = "new"  # "new" | "p6_loaded" | "ms_loaded"
+    source: str = "new"  # "new" | "ms_loaded"
     source_version_id: Optional[int] = None  # For MS schedules: Supabase version ID
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
@@ -317,84 +315,6 @@ class ScheduleStateManager:
             )
         return self._workspaces[conversation_id]
     
-    @logfire.instrument("schedule_state_manager.load_from_p6")
-    def load_from_p6(
-        self, 
-        conversation_id: str,
-        project_id: int,
-        project_name: str,
-        activities_df: pd.DataFrame,
-        relationships_df: pd.DataFrame,
-        activity_codes_df: Optional[pd.DataFrame] = None,
-        code_types_with_values: Optional[dict[str, list[str]]] = None,
-        project_start: Optional[date] = None,
-        project_finish: Optional[date] = None
-    ) -> ScheduleWorkspace:
-        """
-        Load schedule data from P6 into a workspace.
-        
-        This is the ONLY time we query the database for this conversation.
-        All subsequent operations work on the in-memory DataFrames.
-        
-        Args:
-            conversation_id: Unique conversation identifier
-            project_id: P6 project ID
-            project_name: Project name for display
-            activities_df: DataFrame with activity data
-                Required columns: task_id, task_code, task_name, duration_hours
-                Optional: wbs_id, wbs_path, status_code, constraint_type, constraint_date
-            relationships_df: DataFrame with relationship data
-                Required columns: task_id, pred_task_id
-                Optional: pred_type, lag_hr_cnt
-            activity_codes_df: DataFrame with code assignments
-                Required columns: task_id, code_type_name, code_value_name
-            code_types_with_values: Dict of available code types and values
-                Used by frontend to populate filter dropdowns
-                
-        Returns:
-            Populated ScheduleWorkspace
-        """
-        # Ensure DataFrames have required columns (handles empty project case)
-        required_activity_cols = [
-            'task_id', 'task_code', 'task_name', 'target_drtn_hr_cnt', 'remain_drtn_hr_cnt',
-            'target_start_date', 'target_end_date', 'wbs_id', 'wbs_path', 
-            'status_code', 'total_float_hr_cnt', 'free_float_hr_cnt'
-        ]
-        required_rel_cols = ['task_pred_id', 'task_id', 'pred_task_id', 'pred_type', 'lag_hr_cnt']
-        
-        for col in required_activity_cols:
-            if col not in activities_df.columns:
-                activities_df[col] = None
-        
-        for col in required_rel_cols:
-            if col not in relationships_df.columns:
-                relationships_df[col] = None
-        
-        workspace = ScheduleWorkspace(
-            conversation_id=conversation_id,
-            project_id=project_id,
-            project_name=project_name,
-            activities_df=activities_df,
-            relationships_df=relationships_df,
-            activity_codes_df=activity_codes_df if activity_codes_df is not None else pd.DataFrame(),
-            code_types_with_values=code_types_with_values or {},
-            source="p6_loaded",
-            project_start=project_start,
-            project_finish=project_finish
-        )
-        self._workspaces[conversation_id] = workspace
-        
-        logfire.info(
-            "Loaded P6 schedule into workspace",
-            conversation_id=conversation_id,
-            project_id=project_id,
-            activity_count=len(activities_df),
-            relationship_count=len(relationships_df),
-            code_types=list(code_types_with_values.keys()) if code_types_with_values else []
-        )
-        
-        return workspace
-    
     def create_new(
         self,
         conversation_id: str,
@@ -403,13 +323,13 @@ class ScheduleStateManager:
         """
         Create a new empty workspace for building a schedule from scratch.
         
-        Use case (c): Create new schedules before saving to P6.
+        Use case: Create new schedules before saving or presenting for review.
         
         Initializes empty DataFrames with all required columns so that
         add_activity_ws and add_relationship_ws tools work correctly.
         """
         # Initialize empty DataFrames with required columns
-        # This matches the structure from load_from_p6 to ensure tools work
+        # This matches the workspace structure expected by mutation/calculation tools.
         activities_df = pd.DataFrame(columns=[
             'task_id', 'task_code', 'task_name', 'target_drtn_hr_cnt', 'remain_drtn_hr_cnt',
             'target_start_date', 'target_end_date', 'wbs_id', 'wbs_path',
@@ -535,7 +455,7 @@ class ScheduleStateManager:
                 return 'CS_ASAP'
             return None
 
-        # Convert activities to DataFrame with P6-compatible column names
+        # Convert activities to DataFrame with workspace-compatible column names
         activities_df = pd.DataFrame(activities) if activities else pd.DataFrame()
         
         if not activities_df.empty:
@@ -673,7 +593,7 @@ class ScheduleStateManager:
             project_name=project_name,
             activities_df=activities_df,
             relationships_df=relationships_df,
-            activity_codes_df=pd.DataFrame(),  # MS schedules don't use P6 activity codes
+            activity_codes_df=pd.DataFrame(),
             code_types_with_values={},
             source="ms_loaded",
             source_version_id=version_id,

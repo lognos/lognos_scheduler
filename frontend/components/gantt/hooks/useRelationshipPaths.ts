@@ -35,7 +35,7 @@ const HORIZONTAL_OFFSET = 6; // Pixels offset from bar edge for arrow tip
 const CORNER_RADIUS = 4; // Match activity bar border-radius
 const MIN_HORIZONTAL_SPACE = 20; // Minimum space needed for direct routing
 const ROUTE_AROUND_GAP = 12; // Gap when routing around bars
-const P6_BEND_OFFSET = 10; // Horizontal offset before vertical bend (P6-style)
+const ELBOW_BEND_OFFSET = 10; // Horizontal offset before vertical bend
 // Milestone diamond is a 12px square rotated 45° → half-diagonal ≈ 8.5px each side
 // of its visual center. Use this so arrow gap matches regular bars instead of
 // relying on bounds derived from the clamped widthPercentage.
@@ -236,8 +236,8 @@ function generateFSPath(
   const hasSpace = entryX - exitX >= MIN_HORIZONTAL_SPACE;
 
   if (hasSpace) {
-    // P6-style: short horizontal → vertical → horizontal (avoid long mid-span)
-    const elbowX = exitX + P6_BEND_OFFSET;
+    // Short horizontal -> vertical -> horizontal path avoids long mid-span lines.
+    const elbowX = exitX + ELBOW_BEND_OFFSET;
     return buildPath([
       `M ${exitX} ${exitY}`,
       `L ${elbowX - r} ${exitY}`,

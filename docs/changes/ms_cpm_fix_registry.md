@@ -44,7 +44,7 @@
 - [ ] Integration test: Pending runtime verification in Gantt flow
 - [ ] Date comparison: Pending runtime verification
 
-**Notes**: Field defaults to empty list for P6 compatibility.
+**Notes**: Field defaults to an empty list for compatibility with schedules that do not define relationship metadata.
 
 ### [DONE] Change ID: 3
 
@@ -320,7 +320,7 @@
 - [ ] Integration test: Pending runtime verification
 - [ ] Date comparison: Pending runtime verification
 
-**Notes**: Applies to MS schedules; P6 remains unaffected with empty list.
+**Notes**: Applies to MS schedules; schedules without this metadata keep the empty-list default.
 
 ### [DONE] Change ID: 15
 

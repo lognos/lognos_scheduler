@@ -11,8 +11,9 @@ All notable changes to this project will be documented in this file.
 - Added double-click on the Gantt timeline header to reset the timeline scale so the project fits the available viewport width.
 - Added two months of leading and trailing padding to the Gantt timeline so months continue beyond the project window without overflowing the viewport.
 - Added a resizable floating chat overlay for the Schedule Assistant workspace.
-- Added P6-style schedule view modes for longest-path critical path, total-float critical, near-critical, and Float Path 1 analysis.
+- Added schedule view modes for longest-path critical path, total-float critical, near-critical, and Float Path 1 analysis.
 - Added config-aware schedule view snapshot invalidation so cached views rebuild when critical-path semantics change.
+- Added MS activity semantic search backed by Supabase schedule activity embeddings and a prepared RPC migration.
 
 ### Changed
 
@@ -23,6 +24,13 @@ All notable changes to this project will be documented in this file.
 - Changed the stacking order so the frozen Gantt columns paint above relationship arrows during horizontal scroll instead of being covered by them.
 - Changed the Gantt relationship arrows overlay to clip its SVG to the timeline area so arrow paths can no longer bleed leftward into the frozen activity columns when scrolled.
 - Changed the Gantt relationship arrows overlay to dynamically clip its leftmost region equal to the current horizontal scroll offset so arrows can never paint behind the sticky activity columns once the body has been scrolled right.
+- Changed the backend runtime to a Lognos Scheduling Agent MS/workspace-only service while preserving workspace CPM, Gantt visualization, what-if, and email/team context behavior.
+- Changed scheduling agent construction to support the project's Pydantic AI dependency range and report optional Logfire instrumentation incompatibility without blocking app startup.
+- Pinned `pydantic-ai` to the version verified with the scheduling agent constructor and usage-limit APIs.
+
+### Removed
+
+- Removed Primavera P6 SQLite runtime paths, P6 API routes, P6 agent/tools, P6 repositories/services, and old P6 docs/scripts/data from the production cleanup branch.
 
 ### Fixed
 

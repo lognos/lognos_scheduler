@@ -268,7 +268,7 @@ Add to `scheduler_general.xml.j2`:
 <what_if_analysis>
     When the user requests what-if or impact analysis:
     
-    1) Load the schedule into workspace (load_schedule_ms / load_schedule_ws)
+    1) Load the schedule into workspace (load_schedule_ms) or create a new workspace (create_schedule_ws)
     2) Calculate the initial state (calculate_gantt_ws)
     3) Snapshot as baseline (snapshot_baseline_ws) - REQUIRED before modifications
     4) Apply modifications (modify_activity_ws, add_relationship_ws, etc.)

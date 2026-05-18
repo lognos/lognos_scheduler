@@ -30,7 +30,6 @@ class ConversationDetailResponse(BaseModel):
     title: str
     creator_email: str
     project_id: Optional[str] = None
-    p6_schedule_id: Optional[str] = None
     message_count: int
     status: str
     created_at: str
@@ -97,7 +96,6 @@ async def get_conversation(
             title=conversation.title,
             creator_email=conversation.creator_email,
             project_id=conversation.project_id,
-            p6_schedule_id=conversation.p6_schedule_id,
             message_count=conversation.message_count,
             status=conversation.status,
             created_at=conversation.created_at,

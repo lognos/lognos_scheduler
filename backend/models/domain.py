@@ -1,38 +1,5 @@
-from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, Literal
-
-
-# ============================================================
-# P6 Domain Models
-# ============================================================
-
-class P6Activity(BaseModel):
-    task_id: int
-    proj_id: int
-    wbs_id: int
-    clndr_id: Optional[int]
-    task_code: str
-    task_name: str
-    status_code: str
-    task_type: str
-    duration_type: str
-    target_drtn_hr_cnt: float
-    remain_drtn_hr_cnt: float
-    phys_complete_pct: float
-    create_date: datetime
-    update_date: datetime
-    create_user: str
-    update_user: str
-
-class P6Relationship(BaseModel):
-    task_pred_id: int
-    task_id: int
-    pred_task_id: int
-    proj_id: int
-    pred_proj_id: int
-    pred_type: str
-    lag_hr_cnt: float
 
 
 # ============================================================
@@ -96,7 +63,6 @@ class ConversationCreate(BaseModel):
     conversation_id: str
     creator_email: str
     project_id: Optional[str] = None
-    p6_schedule_id: Optional[str] = None
     title: str = "New conversation"
 
 
@@ -149,39 +115,9 @@ class ConversationWithMessages(BaseModel):
     conversation_id: str
     creator_email: str
     project_id: Optional[str] = None
-    p6_schedule_id: Optional[str] = None
     title: str
     message_count: int
     last_message_at: Optional[str] = None
     status: str
     created_at: str
     messages: list[MessageRecord]
-
-
-# ============================================================
-# P6 Schedule Domain Models
-# ============================================================
-
-class P6Schedule(BaseModel):
-    """P6 Schedule mapping record."""
-    id: str
-    project_id: str
-    p6_proj_id: int
-    p6_proj_short_name: Optional[str] = None
-    schedule_name: str
-    schedule_type: str = "current"
-    is_active: bool = True
-    created_at: str
-    updated_at: str
-    metadata: dict = {}
-
-
-class P6ScheduleCreate(BaseModel):
-    """Input model for creating a P6 schedule mapping."""
-    model_config = ConfigDict(strict=True)
-    
-    project_id: str
-    p6_proj_id: int
-    p6_proj_short_name: Optional[str] = None
-    schedule_name: str
-    schedule_type: str = "current"
